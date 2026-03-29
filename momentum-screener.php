@@ -136,7 +136,7 @@ class Momentum_Screener {
 
         add_settings_field(
             'default_lookback',
-            __('Период расчета по умолчанию (мес)', 'momentum-screener'),
+            __('Период расчета по умолчанию (нед)', 'momentum-screener'),
             array($this, 'default_lookback_callback'),
             'momentum-screener',
             'momentum_screener_main'
@@ -144,7 +144,7 @@ class Momentum_Screener {
 
         add_settings_field(
             'default_holding',
-            __('Период удержания по умолчанию (мес)', 'momentum-screener'),
+            __('Период удержания по умолчанию (нед)', 'momentum-screener'),
             array($this, 'default_holding_callback'),
             'momentum-screener',
             'momentum_screener_main'
@@ -170,11 +170,11 @@ class Momentum_Screener {
         }
 
         if (isset($input['default_lookback'])) {
-            $sanitized['default_lookback'] = min(12, max(1, absint($input['default_lookback'])));
+            $sanitized['default_lookback'] = min(52, max(1, absint($input['default_lookback'])));
         }
 
         if (isset($input['default_holding'])) {
-            $sanitized['default_holding'] = min(6, max(1, absint($input['default_holding'])));
+            $sanitized['default_holding'] = min(10, max(1, absint($input['default_holding'])));
         }
 
         if (isset($input['default_topn'])) {
@@ -220,8 +220,8 @@ class Momentum_Screener {
      */
     public function default_lookback_callback() {
         $options = get_option('momentum_screener_settings');
-        $value = isset($options['default_lookback']) ? $options['default_lookback'] : 3;
-        echo '<input type="number" name="momentum_screener_settings[default_lookback]" value="' . esc_attr($value) . '" min="1" max="12" class="small-text" />';
+        $value = isset($options['default_lookback']) ? $options['default_lookback'] : 13;
+        echo '<input type="number" name="momentum_screener_settings[default_lookback]" value="' . esc_attr($value) . '" min="1" max="52" class="small-text" />';
     }
 
     /**
@@ -229,8 +229,8 @@ class Momentum_Screener {
      */
     public function default_holding_callback() {
         $options = get_option('momentum_screener_settings');
-        $value = isset($options['default_holding']) ? $options['default_holding'] : 1;
-        echo '<input type="number" name="momentum_screener_settings[default_holding]" value="' . esc_attr($value) . '" min="1" max="6" class="small-text" />';
+        $value = isset($options['default_holding']) ? $options['default_holding'] : 4;
+        echo '<input type="number" name="momentum_screener_settings[default_holding]" value="' . esc_attr($value) . '" min="1" max="10" class="small-text" />';
     }
 
     /**
@@ -269,14 +269,14 @@ class Momentum_Screener {
 
             <h3><?php esc_html_e('Параметры шорткода:', 'momentum-screener'); ?></h3>
             <ul>
-                <li><code>lookback="3"</code> - <?php esc_html_e('Период расчета momentum (1-12 мес)', 'momentum-screener'); ?></li>
-                <li><code>holding="1"</code> - <?php esc_html_e('Период удержания (1-6 мес)', 'momentum-screener'); ?></li>
+                <li><code>lookback="13"</code> - <?php esc_html_e('Период расчета momentum (1-52 нед)', 'momentum-screener'); ?></li>
+                <li><code>holding="4"</code> - <?php esc_html_e('Период удержания (1-10 нед)', 'momentum-screener'); ?></li>
                 <li><code>topn="10"</code> - <?php esc_html_e('Количество акций в портфеле (5-30)', 'momentum-screener'); ?></li>
             </ul>
 
             <h3><?php esc_html_e('Блокировка фильтров:', 'momentum-screener'); ?></h3>
             <p><?php esc_html_e('Добавьте атрибуты lock_*="1", чтобы запретить пользователю изменять соответствующий параметр. Пример:', 'momentum-screener'); ?></p>
-            <code>[momentum_screener lookback="6" holding="2" topn="15" lock_lookback="1" lock_holding="1"]</code>
+            <code>[momentum_screener lookback="26" holding="4" topn="15" lock_lookback="1" lock_holding="1"]</code>
             <table class="widefat striped" style="margin-top:12px; max-width:700px;">
                 <thead>
                     <tr>
@@ -289,7 +289,7 @@ class Momentum_Screener {
                     <tr><td><code>lock_holding="1"</code></td><td><?php esc_html_e('Период удержания', 'momentum-screener'); ?></td></tr>
                     <tr><td><code>lock_topn="1"</code></td><td><?php esc_html_e('Количество акций в портфеле', 'momentum-screener'); ?></td></tr>
                     <tr><td><code>lock_dividends="1"</code></td><td><?php esc_html_e('Тогл учёта дивидендов', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_skip="1"</code></td><td><?php esc_html_e('Тогл Reversal Effect (исключение последнего месяца)', 'momentum-screener'); ?></td></tr>
+                    <tr><td><code>lock_skip="1"</code></td><td><?php esc_html_e('Слайдер Reversal Effect (пропуск N последних недель)', 'momentum-screener'); ?></td></tr>
                     <tr><td><code>lock_vol="1"</code></td><td><?php esc_html_e('Фильтр волатильности (тогл + слайдер)', 'momentum-screener'); ?></td></tr>
                     <tr><td><code>lock_riskadj="1"</code></td><td><?php esc_html_e('Риск-корректированный momentum', 'momentum-screener'); ?></td></tr>
                     <tr><td><code>lock_return="1"</code></td><td><?php esc_html_e('Фильтр границ доходности (тогл + слайдеры)', 'momentum-screener'); ?></td></tr>
@@ -394,8 +394,8 @@ class Momentum_Screener {
         wp_localize_script('momentum-screener', 'momentumScreener', array(
             'excelUrl' => $excel_url,
             'defaults' => array(
-                'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 3,
-                'holding' => isset($options['default_holding']) ? intval($options['default_holding']) : 1,
+                'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 13,
+                'holding' => isset($options['default_holding']) ? intval($options['default_holding']) : 4,
                 'topn' => isset($options['default_topn']) ? intval($options['default_topn']) : 10,
             ),
             'strings' => array(
@@ -414,8 +414,8 @@ class Momentum_Screener {
         $options = get_option('momentum_screener_settings');
 
         $atts = shortcode_atts(array(
-            'lookback' => isset($options['default_lookback']) ? $options['default_lookback'] : 3,
-            'holding' => isset($options['default_holding']) ? $options['default_holding'] : 1,
+            'lookback' => isset($options['default_lookback']) ? $options['default_lookback'] : 13,
+            'holding' => isset($options['default_holding']) ? $options['default_holding'] : 4,
             'topn' => isset($options['default_topn']) ? $options['default_topn'] : 10,
             'lock_lookback' => '0',
             'lock_holding' => '0',
@@ -461,8 +461,8 @@ function momentum_screener_activate() {
     // Set default options
     $defaults = array(
         'excel_file_id' => '',
-        'default_lookback' => 3,
-        'default_holding' => 1,
+        'default_lookback' => 13,
+        'default_holding' => 4,
         'default_topn' => 10,
     );
 

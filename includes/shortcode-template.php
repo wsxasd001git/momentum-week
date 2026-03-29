@@ -54,16 +54,16 @@ $lock_return    = !empty($atts['lock_return'])    && $atts['lock_return']    !==
         <!-- Controls -->
         <div class="ms-controls">
             <div class="ms-control-group<?php echo $lock_lookback ? ' ms-control-locked' : ''; ?>">
-                <label for="ms-lookback"><?php esc_html_e('Период расчета momentum (мес)', 'momentum-screener'); ?></label>
-                <input type="range" id="ms-lookback" min="1" max="12" value="<?php echo esc_attr($atts['lookback']); ?>"<?php echo $lock_lookback ? ' disabled' : ''; ?>>
-                <span class="ms-control-value" id="ms-lookback-value"><?php echo esc_html($atts['lookback']); ?> мес</span>
+                <label for="ms-lookback"><?php esc_html_e('Период расчета momentum (нед)', 'momentum-screener'); ?></label>
+                <input type="range" id="ms-lookback" min="1" max="52" value="<?php echo esc_attr($atts['lookback']); ?>"<?php echo $lock_lookback ? ' disabled' : ''; ?>>
+                <span class="ms-control-value" id="ms-lookback-value"><?php echo esc_html($atts['lookback']); ?> нед</span>
                 <p class="ms-control-desc"><?php esc_html_e('За какой период считаем доходность для ранжирования акций', 'momentum-screener'); ?></p>
             </div>
 
             <div class="ms-control-group<?php echo $lock_holding ? ' ms-control-locked' : ''; ?>">
-                <label for="ms-holding"><?php esc_html_e('Период удержания (мес)', 'momentum-screener'); ?></label>
-                <input type="range" id="ms-holding" min="1" max="6" value="<?php echo esc_attr($atts['holding']); ?>"<?php echo $lock_holding ? ' disabled' : ''; ?>>
-                <span class="ms-control-value" id="ms-holding-value"><?php echo esc_html($atts['holding']); ?> мес</span>
+                <label for="ms-holding"><?php esc_html_e('Период удержания (нед)', 'momentum-screener'); ?></label>
+                <input type="range" id="ms-holding" min="1" max="10" value="<?php echo esc_attr($atts['holding']); ?>"<?php echo $lock_holding ? ' disabled' : ''; ?>>
+                <span class="ms-control-value" id="ms-holding-value"><?php echo esc_html($atts['holding']); ?> нед</span>
                 <p class="ms-control-desc"><?php esc_html_e('Как долго держим позиции перед ребалансировкой', 'momentum-screener'); ?></p>
             </div>
 
@@ -93,12 +93,13 @@ $lock_return    = !empty($atts['lock_return'])    && $atts['lock_return']    !==
                 <div class="ms-option<?php echo $lock_skip ? ' ms-option-locked' : ''; ?>">
                     <div class="ms-option-header">
                         <div>
-                            <h4><?php esc_html_e('Фильтр последнего месяца (Reversal Effect)', 'momentum-screener'); ?></h4>
-                            <p id="ms-skip-desc"><?php esc_html_e('Исключаем последний месяц из расчета momentum', 'momentum-screener'); ?></p>
+                            <h4><?php esc_html_e('Reversal Effect: пропустить N последних недель', 'momentum-screener'); ?></h4>
+                            <p id="ms-skip-desc"><?php esc_html_e('Исключает последние N недель из расчета momentum. 0 = выключено, 4 ≈ 1 месяц.', 'momentum-screener'); ?></p>
                         </div>
-                        <button class="ms-toggle active<?php echo $lock_skip ? ' ms-locked' : ''; ?>" id="ms-skip-toggle" data-enabled="true"<?php echo $lock_skip ? ' disabled' : ''; ?>>
-                            <?php esc_html_e('Включено', 'momentum-screener'); ?>
-                        </button>
+                    </div>
+                    <div class="ms-option-body" style="display: block;">
+                        <label><?php esc_html_e('Пропустить:', 'momentum-screener'); ?> <span id="ms-skip-weeks-value">4 нед</span></label>
+                        <input type="range" id="ms-skip-weeks" min="0" max="4" step="1" value="4"<?php echo $lock_skip ? ' disabled' : ''; ?>>
                     </div>
                 </div>
             </div>

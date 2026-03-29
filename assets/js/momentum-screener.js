@@ -27,11 +27,11 @@
 
     // Settings
     let settings = {
-        lookbackPeriod: 3,
-        holdingPeriod: 1,
+        lookbackPeriod: 13,
+        holdingPeriod: 4,
         topN: 10,
         useDividends: true,
-        skipLastMonth: true,
+        skipWeeks: 4,
         useVolFilter: false,
         maxVol: 50,
         useRiskAdj: false,
@@ -66,6 +66,8 @@
         $('#ms-lookback').val(settings.lookbackPeriod);
         $('#ms-holding').val(settings.holdingPeriod);
         $('#ms-topn').val(settings.topN);
+        $('#ms-skip-weeks').val(settings.skipWeeks);
+        $('#ms-skip-weeks-value').text(settings.skipWeeks === 0 ? 'Выкл' : settings.skipWeeks + ' нед');
 
         // Bind events
         bindEvents();
@@ -82,7 +84,7 @@
         if (!locks.lookback) {
             $('#ms-lookback').on('input', function() {
                 settings.lookbackPeriod = parseInt($(this).val());
-                $('#ms-lookback-value').text(settings.lookbackPeriod + ' мес');
+                $('#ms-lookback-value').text(settings.lookbackPeriod + ' нед');
                 debouncedRecalculate();
             });
         }
@@ -90,7 +92,7 @@
         if (!locks.holding) {
             $('#ms-holding').on('input', function() {
                 settings.holdingPeriod = parseInt($(this).val());
-                $('#ms-holding-value').text(settings.holdingPeriod + ' мес');
+                $('#ms-holding-value').text(settings.holdingPeriod + ' нед');
                 debouncedRecalculate();
             });
         }
@@ -138,9 +140,9 @@
         }
 
         if (!locks.skip) {
-            $('#ms-skip-toggle').on('click', function() {
-                settings.skipLastMonth = !settings.skipLastMonth;
-                updateToggle($(this), settings.skipLastMonth);
+            $('#ms-skip-weeks').on('input', function() {
+                settings.skipWeeks = parseInt($(this).val());
+                $('#ms-skip-weeks-value').text(settings.skipWeeks === 0 ? 'Выкл' : settings.skipWeeks + ' нед');
                 debouncedRecalculate();
             });
         }
@@ -299,7 +301,7 @@
         ).length;
 
         $('#ms-stats').html(
-            priceData.length + ' месяцев &bull; ' +
+            priceData.length + ' недель &bull; ' +
             tickersCache.length + ' тикеров (сейчас торгуется ' + activeCount + ')'
         );
     }
@@ -349,11 +351,11 @@
             const currentPrice = priceData[i][ticker];
             let pastPrice, dividendStartIdx, dividendEndIdx;
 
-            if (settings.skipLastMonth) {
-                if (i - settings.lookbackPeriod - 1 < 0) return;
-                pastPrice = priceData[i - settings.lookbackPeriod - 1][ticker];
-                dividendStartIdx = i - settings.lookbackPeriod;
-                dividendEndIdx = i - 1;
+            if (settings.skipWeeks > 0) {
+                if (i - settings.lookbackPeriod - settings.skipWeeks < 0) return;
+                pastPrice = priceData[i - settings.lookbackPeriod - settings.skipWeeks][ticker];
+                dividendStartIdx = i - settings.lookbackPeriod - settings.skipWeeks + 1;
+                dividendEndIdx = i - settings.skipWeeks;
             } else {
                 if (i - settings.lookbackPeriod < 0) return;
                 pastPrice = priceData[i - settings.lookbackPeriod][ticker];
@@ -364,7 +366,7 @@
             if (currentPrice && pastPrice && currentPrice > 0 && pastPrice > 0) {
                 // Calculate volatility and check for data continuity
                 const prices = [];
-                const volStartIdx = settings.skipLastMonth ? i - settings.lookbackPeriod - 1 : i - settings.lookbackPeriod;
+                const volStartIdx = i - settings.lookbackPeriod - settings.skipWeeks;
                 const expectedDataPoints = i - Math.max(0, volStartIdx) + 1;
 
                 for (let j = Math.max(0, volStartIdx); j <= i; j++) {
@@ -443,7 +445,7 @@
         const detailedTrades = [];
         let cash = 100000;
 
-        const startIdx = settings.skipLastMonth ? settings.lookbackPeriod + 1 : settings.lookbackPeriod;
+        const startIdx = settings.lookbackPeriod + settings.skipWeeks;
 
         // Check if we have enough data
         if (startIdx >= priceData.length - settings.holdingPeriod) {
@@ -552,7 +554,7 @@
         const annualReturn = totalYears > 0 ? (Math.pow(cash / 100000, 1 / totalYears) - 1) * 100 : 0;
 
         const periods = portfolioValues.length;
-        const periodsPerYear = 12 / settings.holdingPeriod;
+        const periodsPerYear = 52 / settings.holdingPeriod;
         const avgReturn = portfolioValues.reduce((sum, v) => sum + v.return, 0) / periods;
         const volatility = Math.sqrt(
             portfolioValues.reduce((sum, v) => sum + Math.pow(v.return - avgReturn, 2), 0) / periods
@@ -812,8 +814,8 @@
         if (metrics.annualReturn > 15) {
             tips.push('Годовая доходность ' + metrics.annualReturn.toFixed(2) + '% превышает исторический рост рынка!');
         }
-        if (settings.lookbackPeriod < 3) {
-            tips.push('Короткий период расчета может привести к высокой волатильности. Попробуйте 3-6 месяцев.');
+        if (settings.lookbackPeriod < 13) {
+            tips.push('Короткий период расчета может привести к высокой волатильности. Попробуйте 13-26 недель (3-6 месяцев).');
         }
         if (settings.topN > 20) {
             tips.push('Большое количество акций может снизить эффект momentum. Оптимум обычно 10-15 акций.');
