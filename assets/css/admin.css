@@ -1,0 +1,46 @@
+/**
+ * Momentum Screener - Admin Styles
+ */
+
+.wrap h1 {
+    margin-bottom: 20px;
+}
+
+.wrap h2 {
+    margin-top: 30px;
+}
+
+.wrap h3 {
+    margin-top: 20px;
+    color: #1e293b;
+}
+
+.wrap code {
+    background: #f1f5f9;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.875rem;
+}
+
+.wrap ul {
+    list-style: disc;
+    padding-left: 20px;
+}
+
+.wrap ul li {
+    margin-bottom: 8px;
+}
+
+.form-table th {
+    width: 250px;
+}
+
+.form-table .description {
+    font-style: normal;
+    color: #64748b;
+    margin-top: 4px;
+}
+
+.regular-text {
+    width: 400px;
+}
