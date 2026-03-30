@@ -1,14 +1,14 @@
 <?php
 /**
- * Plugin Name: Momentum Screener для российских акций
+ * Plugin Name: Momentum Week для российских акций
  * Plugin URI: https://github.com/momentum-screener
- * Description: Скринер моментума для российского рынка акций с бэктестингом и рекомендациями
- * Version: 1.1.0
+ * Description: Недельный скринер моментума для российского рынка акций с бэктестингом и рекомендациями
+ * Version: 1.2.0
  * Author: Momentum Screener Team
  * Author URI: https://github.com/momentum-screener
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * Text Domain: momentum-screener
+ * Text Domain: momentum-week
  * Domain Path: /languages
  */
 
@@ -18,14 +18,14 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('MOMENTUM_SCREENER_VERSION', '1.2.0');
-define('MOMENTUM_SCREENER_PLUGIN_DIR', plugin_dir_path(__FILE__));
-define('MOMENTUM_SCREENER_PLUGIN_URL', plugin_dir_url(__FILE__));
+define('MOMENTUM_WEEK_VERSION', '1.2.0');
+define('MOMENTUM_WEEK_PLUGIN_DIR', plugin_dir_path(__FILE__));
+define('MOMENTUM_WEEK_PLUGIN_URL', plugin_dir_url(__FILE__));
 
 /**
  * Main Plugin Class
  */
-class Momentum_Screener {
+class Momentum_Week {
 
     private static $instance = null;
 
@@ -64,8 +64,8 @@ class Momentum_Screener {
         add_shortcode('momentum_week', array($this, 'render_shortcode'));
 
         // AJAX hooks
-        add_action('wp_ajax_momentum_get_file_url', array($this, 'ajax_get_file_url'));
-        add_action('wp_ajax_nopriv_momentum_get_file_url', array($this, 'ajax_get_file_url'));
+        add_action('wp_ajax_momentum_week_get_file_url', array($this, 'ajax_get_file_url'));
+        add_action('wp_ajax_nopriv_momentum_week_get_file_url', array($this, 'ajax_get_file_url'));
     }
 
     /**
@@ -103,10 +103,10 @@ class Momentum_Screener {
      */
     public function add_admin_menu() {
         add_options_page(
-            __('Momentum Screener', 'momentum-screener'),
-            __('Momentum Screener', 'momentum-screener'),
+            __('Momentum Week', 'momentum-week'),
+            __('Momentum Week', 'momentum-week'),
             'manage_options',
-            'momentum-screener',
+            'momentum-week',
             array($this, 'render_admin_page')
         );
     }
@@ -115,47 +115,47 @@ class Momentum_Screener {
      * Register settings
      */
     public function register_settings() {
-        register_setting('momentum_screener_options', 'momentum_screener_settings', array(
+        register_setting('momentum_week_options', 'momentum_week_settings', array(
             'sanitize_callback' => array($this, 'sanitize_settings')
         ));
 
         add_settings_section(
-            'momentum_screener_main',
-            __('Настройки источника данных', 'momentum-screener'),
+            'momentum_week_main',
+            __('Настройки источника данных', 'momentum-week'),
             array($this, 'settings_section_callback'),
-            'momentum-screener'
+            'momentum-week'
         );
 
         add_settings_field(
             'excel_file_id',
-            __('Excel файл с данными', 'momentum-screener'),
+            __('Excel файл с данными', 'momentum-week'),
             array($this, 'excel_file_callback'),
-            'momentum-screener',
-            'momentum_screener_main'
+            'momentum-week',
+            'momentum_week_main'
         );
 
         add_settings_field(
             'default_lookback',
-            __('Период расчета по умолчанию (нед)', 'momentum-screener'),
+            __('Период расчета по умолчанию (нед)', 'momentum-week'),
             array($this, 'default_lookback_callback'),
-            'momentum-screener',
-            'momentum_screener_main'
+            'momentum-week',
+            'momentum_week_main'
         );
 
         add_settings_field(
             'default_holding',
-            __('Период удержания по умолчанию (нед)', 'momentum-screener'),
+            __('Период удержания по умолчанию (нед)', 'momentum-week'),
             array($this, 'default_holding_callback'),
-            'momentum-screener',
-            'momentum_screener_main'
+            'momentum-week',
+            'momentum_week_main'
         );
 
         add_settings_field(
             'default_topn',
-            __('Количество акций по умолчанию', 'momentum-screener'),
+            __('Количество акций по умолчанию', 'momentum-week'),
             array($this, 'default_topn_callback'),
-            'momentum-screener',
-            'momentum_screener_main'
+            'momentum-week',
+            'momentum_week_main'
         );
     }
 
@@ -188,30 +188,30 @@ class Momentum_Screener {
      * Settings section callback
      */
     public function settings_section_callback() {
-        echo '<p>' . esc_html__('Загрузите Excel файл с ценами акций через медиа-библиотеку WordPress.', 'momentum-screener') . '</p>';
+        echo '<p>' . esc_html__('Загрузите Excel файл с ценами акций через медиа-библиотеку WordPress.', 'momentum-week') . '</p>';
     }
 
     /**
      * Excel file field callback
      */
     public function excel_file_callback() {
-        $options = get_option('momentum_screener_settings');
+        $options = get_option('momentum_week_settings');
         $file_id = isset($options['excel_file_id']) ? $options['excel_file_id'] : '';
         $file_url = $file_id ? wp_get_attachment_url($file_id) : '';
         $file_name = $file_id ? basename(get_attached_file($file_id)) : '';
 
         ?>
         <div class="ms-file-upload">
-            <input type="hidden" name="momentum_screener_settings[excel_file_id]" id="excel_file_id" value="<?php echo esc_attr($file_id); ?>" />
+            <input type="hidden" name="momentum_week_settings[excel_file_id]" id="excel_file_id" value="<?php echo esc_attr($file_id); ?>" />
             <input type="text" id="excel_file_name" value="<?php echo esc_attr($file_name); ?>" class="regular-text" readonly />
             <button type="button" class="button ms-upload-btn" data-target="excel_file_id" data-name="excel_file_name">
-                <?php esc_html_e('Выбрать файл', 'momentum-screener'); ?>
+                <?php esc_html_e('Выбрать файл', 'momentum-week'); ?>
             </button>
             <button type="button" class="button ms-remove-btn" data-target="excel_file_id" data-name="excel_file_name" <?php echo empty($file_id) ? 'style="display:none;"' : ''; ?>>
-                <?php esc_html_e('Удалить', 'momentum-screener'); ?>
+                <?php esc_html_e('Удалить', 'momentum-week'); ?>
             </button>
         </div>
-        <p class="description"><?php esc_html_e('Файл должен содержать лист "цены". Опционально: лист "дивиденды" или "Дивид"', 'momentum-screener'); ?></p>
+        <p class="description"><?php esc_html_e('Файл должен содержать лист "цены". Опционально: лист "дивиденды" или "Дивид"', 'momentum-week'); ?></p>
         <?php
     }
 
@@ -219,27 +219,27 @@ class Momentum_Screener {
      * Default lookback field callback
      */
     public function default_lookback_callback() {
-        $options = get_option('momentum_screener_settings');
+        $options = get_option('momentum_week_settings');
         $value = isset($options['default_lookback']) ? $options['default_lookback'] : 13;
-        echo '<input type="number" name="momentum_screener_settings[default_lookback]" value="' . esc_attr($value) . '" min="1" max="52" class="small-text" />';
+        echo '<input type="number" name="momentum_week_settings[default_lookback]" value="' . esc_attr($value) . '" min="1" max="52" class="small-text" />';
     }
 
     /**
      * Default holding field callback
      */
     public function default_holding_callback() {
-        $options = get_option('momentum_screener_settings');
+        $options = get_option('momentum_week_settings');
         $value = isset($options['default_holding']) ? $options['default_holding'] : 4;
-        echo '<input type="number" name="momentum_screener_settings[default_holding]" value="' . esc_attr($value) . '" min="1" max="10" class="small-text" />';
+        echo '<input type="number" name="momentum_week_settings[default_holding]" value="' . esc_attr($value) . '" min="1" max="10" class="small-text" />';
     }
 
     /**
      * Default topN field callback
      */
     public function default_topn_callback() {
-        $options = get_option('momentum_screener_settings');
+        $options = get_option('momentum_week_settings');
         $value = isset($options['default_topn']) ? $options['default_topn'] : 10;
-        echo '<input type="number" name="momentum_screener_settings[default_topn]" value="' . esc_attr($value) . '" min="5" max="30" class="small-text" />';
+        echo '<input type="number" name="momentum_week_settings[default_topn]" value="' . esc_attr($value) . '" min="5" max="30" class="small-text" />';
     }
 
     /**
@@ -255,56 +255,56 @@ class Momentum_Screener {
 
             <form action="options.php" method="post">
                 <?php
-                settings_fields('momentum_screener_options');
-                do_settings_sections('momentum-screener');
-                submit_button(__('Сохранить настройки', 'momentum-screener'));
+                settings_fields('momentum_week_options');
+                do_settings_sections('momentum-week');
+                submit_button(__('Сохранить настройки', 'momentum-week'));
                 ?>
             </form>
 
             <hr>
 
-            <h2><?php esc_html_e('Использование', 'momentum-screener'); ?></h2>
-            <p><?php esc_html_e('Используйте шорткод на любой странице:', 'momentum-screener'); ?></p>
+            <h2><?php esc_html_e('Использование', 'momentum-week'); ?></h2>
+            <p><?php esc_html_e('Используйте шорткод на любой странице:', 'momentum-week'); ?></p>
             <code>[momentum_week]</code>
 
-            <h3><?php esc_html_e('Параметры шорткода:', 'momentum-screener'); ?></h3>
+            <h3><?php esc_html_e('Параметры шорткода:', 'momentum-week'); ?></h3>
             <ul>
-                <li><code>lookback="13"</code> - <?php esc_html_e('Период расчета momentum (1-52 нед)', 'momentum-screener'); ?></li>
-                <li><code>holding="4"</code> - <?php esc_html_e('Период удержания (1-10 нед)', 'momentum-screener'); ?></li>
-                <li><code>topn="10"</code> - <?php esc_html_e('Количество акций в портфеле (5-30)', 'momentum-screener'); ?></li>
+                <li><code>lookback="13"</code> - <?php esc_html_e('Период расчета momentum (1-52 нед)', 'momentum-week'); ?></li>
+                <li><code>holding="4"</code> - <?php esc_html_e('Период удержания (1-10 нед)', 'momentum-week'); ?></li>
+                <li><code>topn="10"</code> - <?php esc_html_e('Количество акций в портфеле (5-30)', 'momentum-week'); ?></li>
             </ul>
 
-            <h3><?php esc_html_e('Блокировка фильтров:', 'momentum-screener'); ?></h3>
-            <p><?php esc_html_e('Добавьте атрибуты lock_*="1", чтобы запретить пользователю изменять соответствующий параметр. Пример:', 'momentum-screener'); ?></p>
+            <h3><?php esc_html_e('Блокировка фильтров:', 'momentum-week'); ?></h3>
+            <p><?php esc_html_e('Добавьте атрибуты lock_*="1", чтобы запретить пользователю изменять соответствующий параметр. Пример:', 'momentum-week'); ?></p>
             <code>[momentum_week lookback="26" holding="4" topn="15" lock_lookback="1" lock_holding="1"]</code>
             <table class="widefat striped" style="margin-top:12px; max-width:700px;">
                 <thead>
                     <tr>
-                        <th><?php esc_html_e('Атрибут', 'momentum-screener'); ?></th>
-                        <th><?php esc_html_e('Что блокирует', 'momentum-screener'); ?></th>
+                        <th><?php esc_html_e('Атрибут', 'momentum-week'); ?></th>
+                        <th><?php esc_html_e('Что блокирует', 'momentum-week'); ?></th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr><td><code>lock_lookback="1"</code></td><td><?php esc_html_e('Период расчёта momentum', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_holding="1"</code></td><td><?php esc_html_e('Период удержания', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_topn="1"</code></td><td><?php esc_html_e('Количество акций в портфеле', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_dividends="1"</code></td><td><?php esc_html_e('Тогл учёта дивидендов', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_skip="1"</code></td><td><?php esc_html_e('Слайдер Reversal Effect (пропуск N последних недель)', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_vol="1"</code></td><td><?php esc_html_e('Фильтр волатильности (тогл + слайдер)', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_riskadj="1"</code></td><td><?php esc_html_e('Риск-корректированный momentum', 'momentum-screener'); ?></td></tr>
-                    <tr><td><code>lock_return="1"</code></td><td><?php esc_html_e('Фильтр границ доходности (тогл + слайдеры)', 'momentum-screener'); ?></td></tr>
+                    <tr><td><code>lock_lookback="1"</code></td><td><?php esc_html_e('Период расчёта momentum', 'momentum-week'); ?></td></tr>
+                    <tr><td><code>lock_holding="1"</code></td><td><?php esc_html_e('Период удержания', 'momentum-week'); ?></td></tr>
+                    <tr><td><code>lock_topn="1"</code></td><td><?php esc_html_e('Количество акций в портфеле', 'momentum-week'); ?></td></tr>
+                    <tr><td><code>lock_dividends="1"</code></td><td><?php esc_html_e('Тогл учёта дивидендов', 'momentum-week'); ?></td></tr>
+                    <tr><td><code>lock_skip="1"</code></td><td><?php esc_html_e('Слайдер Reversal Effect (пропуск N последних недель)', 'momentum-week'); ?></td></tr>
+                    <tr><td><code>lock_vol="1"</code></td><td><?php esc_html_e('Фильтр волатильности (тогл + слайдер)', 'momentum-week'); ?></td></tr>
+                    <tr><td><code>lock_riskadj="1"</code></td><td><?php esc_html_e('Риск-корректированный momentum', 'momentum-week'); ?></td></tr>
+                    <tr><td><code>lock_return="1"</code></td><td><?php esc_html_e('Фильтр границ доходности (тогл + слайдеры)', 'momentum-week'); ?></td></tr>
                 </tbody>
             </table>
 
             <hr>
 
-            <h2><?php esc_html_e('Требования к Excel файлу', 'momentum-screener'); ?></h2>
+            <h2><?php esc_html_e('Требования к Excel файлу', 'momentum-week'); ?></h2>
             <ul>
-                <li><?php esc_html_e('Формат: .xlsx', 'momentum-screener'); ?></li>
-                <li><?php esc_html_e('Лист с названием "цены"', 'momentum-screener'); ?></li>
-                <li><?php esc_html_e('Первый столбец: Time (даты)', 'momentum-screener'); ?></li>
-                <li><?php esc_html_e('Остальные столбцы: тикеры акций с ценами', 'momentum-screener'); ?></li>
-                <li><?php esc_html_e('Опционально: лист "дивиденды" или "Дивид" с дивидендами', 'momentum-screener'); ?></li>
+                <li><?php esc_html_e('Формат: .xlsx', 'momentum-week'); ?></li>
+                <li><?php esc_html_e('Лист с названием "цены"', 'momentum-week'); ?></li>
+                <li><?php esc_html_e('Первый столбец: Time (даты)', 'momentum-week'); ?></li>
+                <li><?php esc_html_e('Остальные столбцы: тикеры акций с ценами', 'momentum-week'); ?></li>
+                <li><?php esc_html_e('Опционально: лист "дивиденды" или "Дивид" с дивидендами', 'momentum-week'); ?></li>
             </ul>
         </div>
         <?php
@@ -314,24 +314,24 @@ class Momentum_Screener {
      * Enqueue admin scripts
      */
     public function enqueue_admin_scripts($hook) {
-        if ('settings_page_momentum-screener' !== $hook) {
+        if ('settings_page_momentum-week' !== $hook) {
             return;
         }
 
         wp_enqueue_media();
 
         wp_enqueue_style(
-            'momentum-screener-admin',
-            MOMENTUM_SCREENER_PLUGIN_URL . 'assets/css/admin.css',
+            'momentum-week-admin',
+            MOMENTUM_WEEK_PLUGIN_URL . 'assets/css/admin.css',
             array(),
-            MOMENTUM_SCREENER_VERSION
+            MOMENTUM_WEEK_VERSION
         );
 
         wp_enqueue_script(
-            'momentum-screener-admin',
-            MOMENTUM_SCREENER_PLUGIN_URL . 'assets/js/admin.js',
+            'momentum-week-admin',
+            MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/admin.js',
             array('jquery'),
-            MOMENTUM_SCREENER_VERSION,
+            MOMENTUM_WEEK_VERSION,
             true
         );
     }
@@ -366,23 +366,23 @@ class Momentum_Screener {
 
         // Enqueue plugin styles
         wp_enqueue_style(
-            'momentum-screener',
-            MOMENTUM_SCREENER_PLUGIN_URL . 'assets/css/momentum-screener.css',
+            'momentum-week',
+            MOMENTUM_WEEK_PLUGIN_URL . 'assets/css/momentum-screener.css',
             array(),
-            MOMENTUM_SCREENER_VERSION
+            MOMENTUM_WEEK_VERSION
         );
 
         // Enqueue plugin script
         wp_enqueue_script(
-            'momentum-screener',
-            MOMENTUM_SCREENER_PLUGIN_URL . 'assets/js/momentum-screener.js',
+            'momentum-week',
+            MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-screener.js',
             array('jquery', 'chartjs', 'sheetjs'),
-            MOMENTUM_SCREENER_VERSION,
+            MOMENTUM_WEEK_VERSION,
             true
         );
 
         // Get settings
-        $options = get_option('momentum_screener_settings');
+        $options = get_option('momentum_week_settings');
 
         // Get file URL
         $excel_url = '';
@@ -391,7 +391,7 @@ class Momentum_Screener {
         }
 
         // Localize script
-        wp_localize_script('momentum-screener', 'momentumScreener', array(
+        wp_localize_script('momentum-week', 'momentumScreener', array(
             'excelUrl' => $excel_url,
             'defaults' => array(
                 'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 13,
@@ -399,10 +399,10 @@ class Momentum_Screener {
                 'topn' => isset($options['default_topn']) ? intval($options['default_topn']) : 10,
             ),
             'strings' => array(
-                'loading' => __('Загрузка данных...', 'momentum-screener'),
-                'error' => __('Ошибка загрузки данных', 'momentum-screener'),
-                'noData' => __('Данные не найдены', 'momentum-screener'),
-                'noFile' => __('Excel файл не настроен. Перейдите в Настройки > Momentum Screener', 'momentum-screener'),
+                'loading' => __('Загрузка данных...', 'momentum-week'),
+                'error' => __('Ошибка загрузки данных', 'momentum-week'),
+                'noData' => __('Данные не найдены', 'momentum-week'),
+                'noFile' => __('Excel файл не настроен. Перейдите в Настройки > Momentum Week', 'momentum-week'),
             )
         ));
     }
@@ -411,7 +411,7 @@ class Momentum_Screener {
      * Render shortcode
      */
     public function render_shortcode($atts) {
-        $options = get_option('momentum_screener_settings');
+        $options = get_option('momentum_week_settings');
 
         $atts = shortcode_atts(array(
             'lookback' => isset($options['default_lookback']) ? $options['default_lookback'] : 13,
@@ -428,7 +428,7 @@ class Momentum_Screener {
         ), $atts);
 
         ob_start();
-        include MOMENTUM_SCREENER_PLUGIN_DIR . 'includes/shortcode-template.php';
+        include MOMENTUM_WEEK_PLUGIN_DIR . 'includes/shortcode-template.php';
         return ob_get_clean();
     }
 
@@ -436,7 +436,7 @@ class Momentum_Screener {
      * AJAX handler for getting file URL
      */
     public function ajax_get_file_url() {
-        $options = get_option('momentum_screener_settings');
+        $options = get_option('momentum_week_settings');
 
         $excel_url = '';
         if (!empty($options['excel_file_id'])) {
@@ -450,14 +450,14 @@ class Momentum_Screener {
 }
 
 // Initialize plugin
-function momentum_screener_init() {
-    return Momentum_Screener::get_instance();
+function momentum_week_init() {
+    return Momentum_Week::get_instance();
 }
-add_action('plugins_loaded', 'momentum_screener_init');
+add_action('plugins_loaded', 'momentum_week_init');
 
 // Activation hook
-register_activation_hook(__FILE__, 'momentum_screener_activate');
-function momentum_screener_activate() {
+register_activation_hook(__FILE__, 'momentum_week_activate');
+function momentum_week_activate() {
     // Set default options
     $defaults = array(
         'excel_file_id' => '',
@@ -466,11 +466,11 @@ function momentum_screener_activate() {
         'default_topn' => 10,
     );
 
-    add_option('momentum_screener_settings', $defaults);
+    add_option('momentum_week_settings', $defaults);
 }
 
 // Deactivation hook
-register_deactivation_hook(__FILE__, 'momentum_screener_deactivate');
-function momentum_screener_deactivate() {
+register_deactivation_hook(__FILE__, 'momentum_week_deactivate');
+function momentum_week_deactivate() {
     // Nothing to clean up
 }
