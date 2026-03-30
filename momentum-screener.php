@@ -61,7 +61,7 @@ class Momentum_Screener {
 
         // Frontend hooks
         add_action('wp_enqueue_scripts', array($this, 'enqueue_frontend_scripts'));
-        add_shortcode('momentum_screener', array($this, 'render_shortcode'));
+        add_shortcode('momentum_week', array($this, 'render_shortcode'));
 
         // AJAX hooks
         add_action('wp_ajax_momentum_get_file_url', array($this, 'ajax_get_file_url'));
@@ -265,7 +265,7 @@ class Momentum_Screener {
 
             <h2><?php esc_html_e('Использование', 'momentum-screener'); ?></h2>
             <p><?php esc_html_e('Используйте шорткод на любой странице:', 'momentum-screener'); ?></p>
-            <code>[momentum_screener]</code>
+            <code>[momentum_week]</code>
 
             <h3><?php esc_html_e('Параметры шорткода:', 'momentum-screener'); ?></h3>
             <ul>
@@ -276,7 +276,7 @@ class Momentum_Screener {
 
             <h3><?php esc_html_e('Блокировка фильтров:', 'momentum-screener'); ?></h3>
             <p><?php esc_html_e('Добавьте атрибуты lock_*="1", чтобы запретить пользователю изменять соответствующий параметр. Пример:', 'momentum-screener'); ?></p>
-            <code>[momentum_screener lookback="26" holding="4" topn="15" lock_lookback="1" lock_holding="1"]</code>
+            <code>[momentum_week lookback="26" holding="4" topn="15" lock_lookback="1" lock_holding="1"]</code>
             <table class="widefat striped" style="margin-top:12px; max-width:700px;">
                 <thead>
                     <tr>
@@ -342,7 +342,7 @@ class Momentum_Screener {
     public function enqueue_frontend_scripts() {
         global $post;
 
-        if (!is_a($post, 'WP_Post') || !has_shortcode($post->post_content, 'momentum_screener')) {
+        if (!is_a($post, 'WP_Post') || !has_shortcode($post->post_content, 'momentum_week')) {
             return;
         }
 
