@@ -392,7 +392,8 @@ class Momentum_Week {
 
         // Localize script
         wp_localize_script('momentum-week', 'momentumScreener', array(
-            'excelUrl' => $excel_url,
+            'excelUrl'  => $excel_url,
+            'workerUrl' => MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-worker.js',
             'defaults' => array(
                 'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 13,
                 'holding' => isset($options['default_holding']) ? intval($options['default_holding']) : 4,

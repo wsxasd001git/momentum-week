@@ -13,6 +13,11 @@
     let recalculateTimeout = null;
     let tickersCache = null;
 
+    // Web Worker state
+    let worker = null;
+    let workerReady = false;
+    let currentCalcId = 0;
+
     // Lock flags (set from shortcode attributes)
     let locks = {
         lookback: false,
@@ -257,24 +262,109 @@
     function finishLoading() {
         $('#ms-loading').hide();
         updateStats();
-        recalculate();
+
+        // Cache tickers here for the worker
+        if (!tickersCache) {
+            tickersCache = Object.keys(priceData[0]).filter(k => k !== 'Time');
+        }
+
         $('#ms-content').show();
+
+        if (typeof Worker !== 'undefined' && momentumScreener.workerUrl) {
+            setupWorker();
+        } else {
+            // Fallback: synchronous calculation
+            recalculateSynchronous();
+        }
+    }
+
+    // ─── Web Worker management ──────────────────────────────────────────────
+
+    /**
+     * Create and init the worker, then trigger first calculation
+     */
+    function setupWorker() {
+        if (worker) {
+            worker.terminate();
+        }
+
+        worker = new Worker(momentumScreener.workerUrl);
+        workerReady = false;
+
+        worker.onmessage = function(e) {
+            const msg = e.data;
+
+            if (msg.type === 'ready') {
+                workerReady = true;
+                // Kick off first calculation right after init
+                sendToWorker();
+
+            } else if (msg.type === 'result') {
+                // Ignore stale results from superseded calculations
+                if (msg.id !== currentCalcId) return;
+
+                setLoadingState(false);
+
+                if (msg.error) {
+                    showError(msg.error);
+                    return;
+                }
+
+                $('#ms-error').hide();
+                updateMetrics(msg.metrics);
+                updateCharts(msg.portfolioValues);
+                updateRecommendations(msg.currentRecommendations);
+                updateHistory(msg.detailedTrades);
+                updateTips(msg.tipMetrics);
+            }
+        };
+
+        worker.onerror = function(e) {
+            setLoadingState(false);
+            showError('Ошибка вычислений: ' + (e.message || 'неизвестная ошибка'));
+        };
+
+        // Send data to worker (only done once)
+        worker.postMessage({
+            type: 'init',
+            priceData: priceData,
+            dividendData: dividendData,
+            tickersCache: tickersCache
+        });
     }
 
     /**
-     * Debounced recalculate to avoid lag on rapid changes
+     * Send current settings to worker for recalculation
+     */
+    function sendToWorker() {
+        if (!worker || !workerReady) return;
+        currentCalcId++;
+        worker.postMessage({
+            type: 'recalculate',
+            settings: Object.assign({}, settings),
+            id: currentCalcId
+        });
+    }
+
+    /**
+     * Show/hide loading state on metrics panel
+     */
+    function setLoadingState(loading) {
+        $('#ms-metrics').css('opacity', loading ? '0.5' : '1');
+    }
+
+    /**
+     * Debounced recalculate — cancels pending timeout on rapid changes.
+     * The worker ignores results from superseded calculation IDs.
      */
     function debouncedRecalculate() {
         if (recalculateTimeout) {
             clearTimeout(recalculateTimeout);
         }
-        // Show loading state
-        $('#ms-metrics').css('opacity', '0.5');
-
+        setLoadingState(true);
         recalculateTimeout = setTimeout(function() {
-            recalculate();
-            $('#ms-metrics').css('opacity', '1');
-        }, 300);
+            sendToWorker();
+        }, 500);
     }
 
     /**
@@ -306,315 +396,7 @@
         );
     }
 
-    /**
-     * Calculate volatility
-     */
-    function calcVol(prices) {
-        if (prices.length < 2) return 0;
-
-        const returns = [];
-        for (let i = 1; i < prices.length; i++) {
-            if (prices[i] && prices[i-1] && prices[i-1] > 0) {
-                returns.push((prices[i] - prices[i-1]) / prices[i-1]);
-            }
-        }
-
-        if (returns.length === 0) return 0;
-
-        const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
-        const variance = returns.reduce((sum, r) => sum + Math.pow(r - avg, 2), 0) / returns.length;
-        return Math.sqrt(variance) * 100;
-    }
-
-    /**
-     * Get actively trading tickers at specific index
-     */
-    function getActiveTickers(idx) {
-        const allTickers = tickersCache || Object.keys(priceData[0]).filter(k => k !== 'Time');
-        return allTickers.filter(ticker => {
-            // Check if ticker has valid price data at this index
-            return priceData[idx][ticker] && priceData[idx][ticker] > 0;
-        });
-    }
-
-    /**
-     * Calculate momentum at specific index
-     */
-    function calcMomentumAtIndex(i) {
-        const currentDate = new Date(priceData[i].Time);
-        const momentumScores = [];
-
-        // Get actively trading tickers at this index
-        const activeTickers = getActiveTickers(i);
-
-        activeTickers.forEach(ticker => {
-            const currentPrice = priceData[i][ticker];
-            let pastPrice, dividendStartIdx, dividendEndIdx;
-
-            if (settings.skipWeeks > 0) {
-                if (i - settings.lookbackPeriod - settings.skipWeeks < 0) return;
-                pastPrice = priceData[i - settings.lookbackPeriod - settings.skipWeeks][ticker];
-                dividendStartIdx = i - settings.lookbackPeriod - settings.skipWeeks + 1;
-                dividendEndIdx = i - settings.skipWeeks;
-            } else {
-                if (i - settings.lookbackPeriod < 0) return;
-                pastPrice = priceData[i - settings.lookbackPeriod][ticker];
-                dividendStartIdx = i - settings.lookbackPeriod + 1;
-                dividendEndIdx = i;
-            }
-
-            if (currentPrice && pastPrice && currentPrice > 0 && pastPrice > 0) {
-                // Calculate volatility and check for data continuity
-                const prices = [];
-                const volStartIdx = i - settings.lookbackPeriod - settings.skipWeeks;
-                const expectedDataPoints = i - Math.max(0, volStartIdx) + 1;
-
-                for (let j = Math.max(0, volStartIdx); j <= i; j++) {
-                    if (priceData[j][ticker] && priceData[j][ticker] > 0) {
-                        prices.push(priceData[j][ticker]);
-                    }
-                }
-
-                // Skip ticker if data is incomplete (missing prices in period)
-                if (prices.length < expectedDataPoints) return;
-
-                const vol = calcVol(prices);
-
-                // Apply volatility filter
-                if (settings.useVolFilter && vol > settings.maxVol) return;
-
-                // Calculate returns
-                let priceReturn = (currentPrice - pastPrice) / pastPrice;
-                let totalReturn = priceReturn;
-
-                // Add dividend return (from past price, not current price at dividend date)
-                if (settings.useDividends && dividendData) {
-                    let dividendReturn = 0;
-                    for (let j = dividendStartIdx; j <= dividendEndIdx; j++) {
-                        if (j >= 0 && j < dividendData.length) {
-                            const divRow = dividendData[j];
-                            // Dividend yield from initial price (pastPrice), not price at payment date
-                            if (divRow && divRow[ticker] && pastPrice > 0) {
-                                dividendReturn += divRow[ticker] / pastPrice;
-                            }
-                        }
-                    }
-                    totalReturn = priceReturn + dividendReturn;
-                }
-
-                // Apply return bounds filter
-                if (settings.useReturnFilter) {
-                    const returnPct = totalReturn * 100;
-                    if (returnPct < settings.minReturn || returnPct > settings.maxReturn) return;
-                }
-
-                // Calculate momentum score
-                let momentum = totalReturn;
-                if (settings.useRiskAdj && vol > 0) {
-                    momentum = (totalReturn * 100) / vol;
-                }
-
-                momentumScores.push({
-                    ticker: ticker,
-                    momentum: momentum,
-                    price: currentPrice,
-                    volatility: vol,
-                    rawReturn: totalReturn
-                });
-            }
-        });
-
-        // Sort by momentum
-        momentumScores.sort((a, b) => b.momentum - a.momentum);
-
-        return {
-            selectedStocks: momentumScores.slice(0, settings.topN),
-            date: currentDate
-        };
-    }
-
-    /**
-     * Recalculate results
-     */
-    function recalculate() {
-        if (!priceData || priceData.length === 0) return;
-
-        // Use cached tickers
-        const tickers = tickersCache || Object.keys(priceData[0]).filter(k => k !== 'Time');
-        const portfolioValues = [];
-        const detailedTrades = [];
-        let cash = 100000;
-
-        const startIdx = settings.lookbackPeriod + settings.skipWeeks;
-
-        // Check if we have enough data
-        if (startIdx >= priceData.length - settings.holdingPeriod) {
-            showError('Недостаточно данных для расчета. Попробуйте уменьшить период расчета momentum.');
-            return;
-        }
-
-        // Run backtest
-        for (let i = startIdx; i < priceData.length - settings.holdingPeriod; i += settings.holdingPeriod) {
-            const { selectedStocks } = calcMomentumAtIndex(i);
-            const currentDate = new Date(priceData[i].Time);
-
-            if (selectedStocks.length > 0) {
-                let periodReturn = 0;
-                const stockDetails = [];
-
-                selectedStocks.forEach(stock => {
-                    const buyPrice = stock.price;
-                    const sellPrice = priceData[i + settings.holdingPeriod][stock.ticker];
-
-                    if (sellPrice && sellPrice > 0) {
-                        let priceReturn = (sellPrice - buyPrice) / buyPrice;
-                        let stockReturn = priceReturn;
-
-                        // Add dividends during holding period
-                        if (settings.useDividends && dividendData) {
-                            let dividendReturn = 0;
-                            for (let j = i + 1; j <= i + settings.holdingPeriod && j < priceData.length; j++) {
-                                if (j < dividendData.length) {
-                                    const divRow = dividendData[j];
-                                    // Dividend yield from buy price, not current price
-                                    if (divRow && divRow[stock.ticker] && buyPrice > 0) {
-                                        dividendReturn += divRow[stock.ticker] / buyPrice;
-                                    }
-                                }
-                            }
-                            stockReturn = priceReturn + dividendReturn;
-                        }
-
-                        periodReturn += stockReturn / selectedStocks.length;
-
-                        stockDetails.push({
-                            ticker: stock.ticker,
-                            momentum: stock.momentum,
-                            buyPrice: buyPrice.toFixed(2),
-                            sellPrice: sellPrice.toFixed(2),
-                            return: (stockReturn * 100).toFixed(2),
-                            weight: (100 / selectedStocks.length).toFixed(1)
-                        });
-                    }
-                });
-
-                cash *= (1 + periodReturn);
-
-                portfolioValues.push({
-                    date: formatDate(currentDate),
-                    value: cash,
-                    return: periodReturn * 100
-                });
-
-                detailedTrades.push({
-                    date: formatDate(currentDate),
-                    sellDate: formatDate(new Date(priceData[i + settings.holdingPeriod].Time)),
-                    totalReturn: (periodReturn * 100).toFixed(2),
-                    stockCount: selectedStocks.length,
-                    stocks: stockDetails
-                });
-            }
-        }
-
-        if (portfolioValues.length === 0) {
-            showError('Недостаточно данных для расчета');
-            return;
-        }
-
-        // Hide error if shown
-        $('#ms-error').hide();
-
-        // Calculate current recommendations
-        const lastIdx = priceData.length - 1;
-        let currentRecommendations = null;
-        if (lastIdx >= startIdx) {
-            const { selectedStocks, date } = calcMomentumAtIndex(lastIdx);
-            const portfolioSize = selectedStocks.length;
-
-            currentRecommendations = {
-                date: formatDate(date),
-                stocks: selectedStocks.map((s, idx) => ({
-                    ticker: s.ticker,
-                    price: s.price.toFixed(2),
-                    momentum: (s.momentum * 100).toFixed(2),
-                    rawReturn: (s.rawReturn * 100).toFixed(2),
-                    volatility: s.volatility.toFixed(2),
-                    weight: (100 / settings.topN).toFixed(1),
-                    rank: idx + 1
-                })),
-                portfolioSize: portfolioSize
-            };
-        }
-
-        // Calculate metrics
-        const totalReturn = ((cash - 100000) / 100000) * 100;
-        const firstDate = new Date(portfolioValues[0].date);
-        const lastDate = new Date(portfolioValues[portfolioValues.length - 1].date);
-        const totalYears = (lastDate - firstDate) / (1000 * 60 * 60 * 24 * 365.25);
-        const annualReturn = totalYears > 0 ? (Math.pow(cash / 100000, 1 / totalYears) - 1) * 100 : 0;
-
-        const periods = portfolioValues.length;
-        const periodsPerYear = 52 / settings.holdingPeriod;
-        const avgReturn = portfolioValues.reduce((sum, v) => sum + v.return, 0) / periods;
-        const volatility = Math.sqrt(
-            portfolioValues.reduce((sum, v) => sum + Math.pow(v.return - avgReturn, 2), 0) / periods
-        );
-
-        // Annualized Sharpe Ratio
-        const annualAvgReturn = avgReturn * periodsPerYear;
-        const annualVol = volatility * Math.sqrt(periodsPerYear);
-        const sharpeRatio = annualVol > 0 ? annualAvgReturn / annualVol : 0;
-
-        // Sortino Ratio: downside deviation from average, divided by all periods
-        const downsideReturns = portfolioValues.filter(v => v.return < avgReturn).map(v => v.return);
-        const downVol = Math.sqrt(
-            downsideReturns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / periods
-        );
-        const annualDownVol = downVol * Math.sqrt(periodsPerYear);
-        const sortinoRatio = annualDownVol > 0 ? annualAvgReturn / annualDownVol : sharpeRatio;
-
-        // Calculate max drawdown
-        let peak = portfolioValues[0].value;
-        let maxDrawdown = 0;
-        portfolioValues.forEach(v => {
-            if (v.value > peak) peak = v.value;
-            const drawdown = ((v.value - peak) / peak) * 100;
-            if (drawdown < maxDrawdown) maxDrawdown = drawdown;
-        });
-
-        // Update UI
-        updateMetrics({
-            totalReturn: totalReturn.toFixed(2),
-            annualReturn: annualReturn.toFixed(2),
-            avgReturn: avgReturn.toFixed(2),
-            volatility: volatility.toFixed(2),
-            sharpeRatio: sharpeRatio.toFixed(2),
-            sortinoRatio: sortinoRatio.toFixed(2),
-            maxDrawdown: maxDrawdown.toFixed(2),
-            trades: detailedTrades.length,
-            years: totalYears.toFixed(1)
-        });
-
-        updateCharts(portfolioValues);
-        updateRecommendations(currentRecommendations);
-        updateHistory(detailedTrades);
-        updateTips({
-            sharpeRatio: sharpeRatio,
-            sortinoRatio: sortinoRatio,
-            maxDrawdown: maxDrawdown,
-            annualReturn: annualReturn
-        });
-    }
-
-    /**
-     * Format date as YYYY-MM-DD
-     */
-    function formatDate(date) {
-        if (typeof date === 'string') {
-            date = new Date(date);
-        }
-        return date.toISOString().split('T')[0];
-    }
+    // ─── UI update functions ────────────────────────────────────────────────
 
     /**
      * Update metrics display
@@ -631,70 +413,74 @@
     }
 
     /**
-     * Update charts
+     * Update charts — reuses existing Chart.js instances instead of
+     * destroying and recreating them on every recalculation.
      */
     function updateCharts(portfolioValues) {
-        // Destroy existing charts
-        if (charts.equity) charts.equity.destroy();
-        if (charts.returns) charts.returns.destroy();
-
         const labels = portfolioValues.map(v => v.date);
+        const equityData = portfolioValues.map(v => v.value);
 
-        // Equity chart
-        const equityCtx = document.getElementById('ms-equity-chart').getContext('2d');
-        charts.equity = new Chart(equityCtx, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Стоимость портфеля (руб)',
-                    data: portfolioValues.map(v => v.value),
-                    borderColor: '#3b82f6',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    fill: true,
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        position: 'top'
-                    }
+        // ── Equity chart ────────────────────────────────────────────────────
+        if (charts.equity) {
+            charts.equity.data.labels = labels;
+            charts.equity.data.datasets[0].data = equityData;
+            charts.equity.update('none'); // skip animation for instant update
+        } else {
+            const equityCtx = document.getElementById('ms-equity-chart').getContext('2d');
+            charts.equity = new Chart(equityCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Стоимость портфеля (руб)',
+                        data: equityData,
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.1
+                    }]
                 },
-                scales: {
-                    y: {
-                        beginAtZero: false
-                    }
+                options: {
+                    responsive: true,
+                    animation: false,
+                    plugins: { legend: { position: 'top' } },
+                    scales: { y: { beginAtZero: false } }
                 }
-            }
-        });
+            });
+        }
 
-        // Returns chart (last 50 periods)
+        // ── Returns chart (last 50 periods) ─────────────────────────────────
         const recentValues = portfolioValues.slice(-50);
         const recentLabels = recentValues.map(v => v.date);
-        const returnsCtx = document.getElementById('ms-returns-chart').getContext('2d');
-        charts.returns = new Chart(returnsCtx, {
-            type: 'bar',
-            data: {
-                labels: recentLabels,
-                datasets: [{
-                    label: 'Доходность периода (%)',
-                    data: recentValues.map(v => v.return),
-                    backgroundColor: recentValues.map(v =>
-                        v.return >= 0 ? 'rgba(16, 185, 129, 0.7)' : 'rgba(239, 68, 68, 0.7)'
-                    )
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        position: 'top'
-                    }
+        const returnData   = recentValues.map(v => v.return);
+        const colors       = recentValues.map(v =>
+            v.return >= 0 ? 'rgba(16, 185, 129, 0.7)' : 'rgba(239, 68, 68, 0.7)'
+        );
+
+        if (charts.returns) {
+            charts.returns.data.labels = recentLabels;
+            charts.returns.data.datasets[0].data = returnData;
+            charts.returns.data.datasets[0].backgroundColor = colors;
+            charts.returns.update('none');
+        } else {
+            const returnsCtx = document.getElementById('ms-returns-chart').getContext('2d');
+            charts.returns = new Chart(returnsCtx, {
+                type: 'bar',
+                data: {
+                    labels: recentLabels,
+                    datasets: [{
+                        label: 'Доходность периода (%)',
+                        data: returnData,
+                        backgroundColor: colors
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    animation: false,
+                    plugins: { legend: { position: 'top' } }
                 }
-            }
-        });
+            });
+        }
     }
 
     /**
@@ -834,6 +620,247 @@
         tips.forEach(tip => {
             $tips.append('<p>' + tip + '</p>');
         });
+    }
+
+    // ─── Synchronous fallback (browsers without Worker support) ────────────
+
+    function recalculateSynchronous() {
+        if (!priceData || priceData.length === 0) return;
+
+        // Inline helpers (mirrors worker logic)
+        function calcVol(prices) {
+            if (prices.length < 2) return 0;
+            const returns = [];
+            for (let i = 1; i < prices.length; i++) {
+                if (prices[i] && prices[i-1] && prices[i-1] > 0) {
+                    returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+                }
+            }
+            if (returns.length === 0) return 0;
+            const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
+            const variance = returns.reduce((sum, r) => sum + Math.pow(r - avg, 2), 0) / returns.length;
+            return Math.sqrt(variance) * 100;
+        }
+
+        function formatDate(date) {
+            if (typeof date === 'string') date = new Date(date);
+            return date.toISOString().split('T')[0];
+        }
+
+        function getActiveTickers(idx) {
+            return tickersCache.filter(ticker =>
+                priceData[idx][ticker] && priceData[idx][ticker] > 0
+            );
+        }
+
+        function calcMomentumAtIndex(i) {
+            const currentDate = new Date(priceData[i].Time);
+            const momentumScores = [];
+            const activeTickers = getActiveTickers(i);
+
+            activeTickers.forEach(ticker => {
+                const currentPrice = priceData[i][ticker];
+                let pastPrice, dividendStartIdx, dividendEndIdx;
+
+                if (settings.skipWeeks > 0) {
+                    if (i - settings.lookbackPeriod - settings.skipWeeks < 0) return;
+                    pastPrice = priceData[i - settings.lookbackPeriod - settings.skipWeeks][ticker];
+                    dividendStartIdx = i - settings.lookbackPeriod - settings.skipWeeks + 1;
+                    dividendEndIdx = i - settings.skipWeeks;
+                } else {
+                    if (i - settings.lookbackPeriod < 0) return;
+                    pastPrice = priceData[i - settings.lookbackPeriod][ticker];
+                    dividendStartIdx = i - settings.lookbackPeriod + 1;
+                    dividendEndIdx = i;
+                }
+
+                if (currentPrice && pastPrice && currentPrice > 0 && pastPrice > 0) {
+                    const prices = [];
+                    const volStartIdx = i - settings.lookbackPeriod - settings.skipWeeks;
+                    const expectedDataPoints = i - Math.max(0, volStartIdx) + 1;
+
+                    for (let j = Math.max(0, volStartIdx); j <= i; j++) {
+                        if (priceData[j][ticker] && priceData[j][ticker] > 0) {
+                            prices.push(priceData[j][ticker]);
+                        }
+                    }
+
+                    if (prices.length < expectedDataPoints) return;
+
+                    const vol = calcVol(prices);
+                    if (settings.useVolFilter && vol > settings.maxVol) return;
+
+                    let priceReturn = (currentPrice - pastPrice) / pastPrice;
+                    let totalReturn = priceReturn;
+
+                    if (settings.useDividends && dividendData) {
+                        let dividendReturn = 0;
+                        for (let j = dividendStartIdx; j <= dividendEndIdx; j++) {
+                            if (j >= 0 && j < dividendData.length) {
+                                const divRow = dividendData[j];
+                                if (divRow && divRow[ticker] && pastPrice > 0) {
+                                    dividendReturn += divRow[ticker] / pastPrice;
+                                }
+                            }
+                        }
+                        totalReturn = priceReturn + dividendReturn;
+                    }
+
+                    if (settings.useReturnFilter) {
+                        const returnPct = totalReturn * 100;
+                        if (returnPct < settings.minReturn || returnPct > settings.maxReturn) return;
+                    }
+
+                    let momentum = totalReturn;
+                    if (settings.useRiskAdj && vol > 0) {
+                        momentum = (totalReturn * 100) / vol;
+                    }
+
+                    momentumScores.push({ ticker, momentum, price: currentPrice, volatility: vol, rawReturn: totalReturn });
+                }
+            });
+
+            momentumScores.sort((a, b) => b.momentum - a.momentum);
+            return { selectedStocks: momentumScores.slice(0, settings.topN), date: currentDate };
+        }
+
+        const portfolioValues = [];
+        const detailedTrades = [];
+        let cash = 100000;
+        const startIdx = settings.lookbackPeriod + settings.skipWeeks;
+
+        if (startIdx >= priceData.length - settings.holdingPeriod) {
+            showError('Недостаточно данных для расчета. Попробуйте уменьшить период расчета momentum.');
+            return;
+        }
+
+        for (let i = startIdx; i < priceData.length - settings.holdingPeriod; i += settings.holdingPeriod) {
+            const { selectedStocks } = calcMomentumAtIndex(i);
+            const currentDate = new Date(priceData[i].Time);
+
+            if (selectedStocks.length === 0) continue;
+
+            let periodReturn = 0;
+            const stockDetails = [];
+
+            selectedStocks.forEach(stock => {
+                const buyPrice = stock.price;
+                const sellPrice = priceData[i + settings.holdingPeriod][stock.ticker];
+
+                if (sellPrice && sellPrice > 0) {
+                    let priceReturn = (sellPrice - buyPrice) / buyPrice;
+                    let stockReturn = priceReturn;
+
+                    if (settings.useDividends && dividendData) {
+                        let dividendReturn = 0;
+                        for (let j = i + 1; j <= i + settings.holdingPeriod && j < priceData.length; j++) {
+                            if (j < dividendData.length) {
+                                const divRow = dividendData[j];
+                                if (divRow && divRow[stock.ticker] && buyPrice > 0) {
+                                    dividendReturn += divRow[stock.ticker] / buyPrice;
+                                }
+                            }
+                        }
+                        stockReturn = priceReturn + dividendReturn;
+                    }
+
+                    periodReturn += stockReturn / selectedStocks.length;
+                    stockDetails.push({
+                        ticker: stock.ticker,
+                        momentum: stock.momentum,
+                        buyPrice: buyPrice.toFixed(2),
+                        sellPrice: sellPrice.toFixed(2),
+                        return: (stockReturn * 100).toFixed(2),
+                        weight: (100 / selectedStocks.length).toFixed(1)
+                    });
+                }
+            });
+
+            cash *= (1 + periodReturn);
+            portfolioValues.push({ date: formatDate(currentDate), value: cash, return: periodReturn * 100 });
+            detailedTrades.push({
+                date: formatDate(currentDate),
+                sellDate: formatDate(new Date(priceData[i + settings.holdingPeriod].Time)),
+                totalReturn: (periodReturn * 100).toFixed(2),
+                stockCount: selectedStocks.length,
+                stocks: stockDetails
+            });
+        }
+
+        if (portfolioValues.length === 0) {
+            showError('Недостаточно данных для расчета');
+            return;
+        }
+
+        $('#ms-error').hide();
+
+        const lastIdx = priceData.length - 1;
+        let currentRecommendations = null;
+        if (lastIdx >= startIdx) {
+            const { selectedStocks, date } = calcMomentumAtIndex(lastIdx);
+            currentRecommendations = {
+                date: formatDate(date),
+                stocks: selectedStocks.map((s, idx) => ({
+                    ticker: s.ticker,
+                    price: s.price.toFixed(2),
+                    momentum: (s.momentum * 100).toFixed(2),
+                    rawReturn: (s.rawReturn * 100).toFixed(2),
+                    volatility: s.volatility.toFixed(2),
+                    weight: (100 / settings.topN).toFixed(1),
+                    rank: idx + 1
+                })),
+                portfolioSize: selectedStocks.length
+            };
+        }
+
+        const totalReturn = ((cash - 100000) / 100000) * 100;
+        const firstDate = new Date(portfolioValues[0].date);
+        const lastDate  = new Date(portfolioValues[portfolioValues.length - 1].date);
+        const totalYears = (lastDate - firstDate) / (1000 * 60 * 60 * 24 * 365.25);
+        const annualReturn = totalYears > 0 ? (Math.pow(cash / 100000, 1 / totalYears) - 1) * 100 : 0;
+
+        const periods = portfolioValues.length;
+        const periodsPerYear = 52 / settings.holdingPeriod;
+        const avgReturn = portfolioValues.reduce((sum, v) => sum + v.return, 0) / periods;
+        const volatility = Math.sqrt(
+            portfolioValues.reduce((sum, v) => sum + Math.pow(v.return - avgReturn, 2), 0) / periods
+        );
+
+        const annualAvgReturn = avgReturn * periodsPerYear;
+        const annualVol = volatility * Math.sqrt(periodsPerYear);
+        const sharpeRatio = annualVol > 0 ? annualAvgReturn / annualVol : 0;
+
+        const downsideReturns = portfolioValues.filter(v => v.return < avgReturn).map(v => v.return);
+        const downVol = Math.sqrt(
+            downsideReturns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / periods
+        );
+        const annualDownVol = downVol * Math.sqrt(periodsPerYear);
+        const sortinoRatio = annualDownVol > 0 ? annualAvgReturn / annualDownVol : sharpeRatio;
+
+        let peak = portfolioValues[0].value;
+        let maxDrawdown = 0;
+        portfolioValues.forEach(v => {
+            if (v.value > peak) peak = v.value;
+            const drawdown = ((v.value - peak) / peak) * 100;
+            if (drawdown < maxDrawdown) maxDrawdown = drawdown;
+        });
+
+        updateMetrics({
+            totalReturn:  totalReturn.toFixed(2),
+            annualReturn: annualReturn.toFixed(2),
+            avgReturn:    avgReturn.toFixed(2),
+            volatility:   volatility.toFixed(2),
+            sharpeRatio:  sharpeRatio.toFixed(2),
+            sortinoRatio: sortinoRatio.toFixed(2),
+            maxDrawdown:  maxDrawdown.toFixed(2),
+            trades: detailedTrades.length,
+            years:  totalYears.toFixed(1)
+        });
+
+        updateCharts(portfolioValues);
+        updateRecommendations(currentRecommendations);
+        updateHistory(detailedTrades);
+        updateTips({ sharpeRatio, sortinoRatio, maxDrawdown, annualReturn });
     }
 
     // Initialize on document ready
