@@ -73,7 +73,14 @@
         $('#ms-error').hide();
         $('#ms-content').hide();
 
-        // Step 1: PHP has already parsed the Excel.  Fetch the JSON via AJAX.
+        // Fast path: PHP inlined the data directly in the page HTML.
+        // No network request needed — hand data to the worker immediately.
+        if (window.__momentumData__ && window.__momentumData__.prices) {
+            initWorker(window.__momentumData__.prices, window.__momentumData__.dividends || null);
+            return;
+        }
+
+        // Fallback: fetch parsed JSON from the server-side AJAX endpoint.
         $.ajax({
             url:  momentumScreener.ajaxUrl,
             type: 'POST',
@@ -89,7 +96,6 @@
                     $('#ms-loading').hide();
                     return;
                 }
-                // Step 2: spin up the worker and pass the parsed data
                 initWorker(resp.data.prices, resp.data.dividends || null);
             },
             error: function() {
@@ -150,7 +156,9 @@
 
     function sendToWorker() {
         if (!worker || !workerReady) return;
+        clearTimeout(recalcTimeout);
         currentCalcId++;
+        setLoadingState(true);
         worker.postMessage({
             type:     'recalculate',
             settings: Object.assign({}, settings),
@@ -158,10 +166,19 @@
         });
     }
 
-    function debouncedRecalculate() {
+    // Phase 2 params: topN, holdingPeriod, returnFilter, minReturn, maxReturn.
+    // buildPortfolio() is O(trades × topN) ≈ microseconds — fire immediately.
+    function recalcPhase2() {
+        sendToWorker();
+    }
+
+    // Phase 1 params: lookback, skip, dividends, volFilter, maxVol, riskAdj.
+    // precomputeMomentumMatrix() is O(n×m) — debounce so we don't spam the
+    // worker while the user is still dragging the slider.
+    function recalcPhase1() {
         clearTimeout(recalcTimeout);
         setLoadingState(true);
-        recalcTimeout = setTimeout(sendToWorker, 500);
+        recalcTimeout = setTimeout(sendToWorker, 250);
     }
 
     function setLoadingState(on) {
@@ -175,44 +192,19 @@
     // ─── Events ──────────────────────────────────────────────────────────────
 
     function bindEvents() {
+        // ── Phase 1 params: rebuild momentum matrix ───────────────────────────
         if (!locks.lookback) {
             $('#ms-lookback').on('input', function() {
                 settings.lookbackPeriod = parseInt($(this).val());
                 $('#ms-lookback-value').text(settings.lookbackPeriod + ' нед');
-                debouncedRecalculate();
+                recalcPhase1();
             });
         }
-        if (!locks.holding) {
-            $('#ms-holding').on('input', function() {
-                settings.holdingPeriod = parseInt($(this).val());
-                $('#ms-holding-value').text(settings.holdingPeriod + ' нед');
-                debouncedRecalculate();
-            });
-        }
-        if (!locks.topn) {
-            $('#ms-topn').on('input', function() {
-                settings.topN = parseInt($(this).val());
-                $('#ms-topn-value').text(settings.topN + ' акций');
-                debouncedRecalculate();
-            });
-        }
-        if (!locks.vol) {
-            $('#ms-maxvol').on('input', function() {
-                settings.maxVol = parseInt($(this).val());
-                $('#ms-maxvol-value').text(settings.maxVol);
-                debouncedRecalculate();
-            });
-        }
-        if (!locks.return) {
-            $('#ms-minreturn').on('input', function() {
-                settings.minReturn = parseInt($(this).val());
-                $('#ms-minreturn-value').text(settings.minReturn);
-                debouncedRecalculate();
-            });
-            $('#ms-maxreturn').on('input', function() {
-                settings.maxReturn = parseInt($(this).val());
-                $('#ms-maxreturn-value').text(settings.maxReturn);
-                debouncedRecalculate();
+        if (!locks.skip) {
+            $('#ms-skip-weeks').on('input', function() {
+                settings.skipWeeks = parseInt($(this).val());
+                $('#ms-skip-weeks-value').text(settings.skipWeeks === 0 ? 'Выкл' : settings.skipWeeks + ' нед');
+                recalcPhase1();
             });
         }
         if (!locks.dividends) {
@@ -222,14 +214,7 @@
                 $('#ms-dividends-desc').text(settings.useDividends
                     ? 'Полная доходность: рост цены + дивиденды'
                     : 'Только рост цены (без дивидендов)');
-                debouncedRecalculate();
-            });
-        }
-        if (!locks.skip) {
-            $('#ms-skip-weeks').on('input', function() {
-                settings.skipWeeks = parseInt($(this).val());
-                $('#ms-skip-weeks-value').text(settings.skipWeeks === 0 ? 'Выкл' : settings.skipWeeks + ' нед');
-                debouncedRecalculate();
+                recalcPhase1();
             });
         }
         if (!locks.vol) {
@@ -237,14 +222,35 @@
                 settings.useVolFilter = !settings.useVolFilter;
                 updateToggle($(this), settings.useVolFilter);
                 $('#ms-volfilter-body').toggle(settings.useVolFilter);
-                debouncedRecalculate();
+                recalcPhase1();
+            });
+            $('#ms-maxvol').on('input', function() {
+                settings.maxVol = parseInt($(this).val());
+                $('#ms-maxvol-value').text(settings.maxVol);
+                recalcPhase1();
             });
         }
         if (!locks.riskadj) {
             $('#ms-riskadj-toggle').on('click', function() {
                 settings.useRiskAdj = !settings.useRiskAdj;
                 updateToggle($(this), settings.useRiskAdj, true);
-                debouncedRecalculate();
+                recalcPhase1();
+            });
+        }
+
+        // ── Phase 2 params: just slice the cached matrix → instant ────────────
+        if (!locks.topn) {
+            $('#ms-topn').on('input', function() {
+                settings.topN = parseInt($(this).val());
+                $('#ms-topn-value').text(settings.topN + ' акций');
+                recalcPhase2();
+            });
+        }
+        if (!locks.holding) {
+            $('#ms-holding').on('input', function() {
+                settings.holdingPeriod = parseInt($(this).val());
+                $('#ms-holding-value').text(settings.holdingPeriod + ' нед');
+                recalcPhase2();
             });
         }
         if (!locks.return) {
@@ -252,9 +258,20 @@
                 settings.useReturnFilter = !settings.useReturnFilter;
                 updateToggle($(this), settings.useReturnFilter);
                 $('#ms-returnfilter-body').toggle(settings.useReturnFilter);
-                debouncedRecalculate();
+                recalcPhase2();
+            });
+            $('#ms-minreturn').on('input', function() {
+                settings.minReturn = parseInt($(this).val());
+                $('#ms-minreturn-value').text(settings.minReturn);
+                recalcPhase2();
+            });
+            $('#ms-maxreturn').on('input', function() {
+                settings.maxReturn = parseInt($(this).val());
+                $('#ms-maxreturn-value').text(settings.maxReturn);
+                recalcPhase2();
             });
         }
+
     }
 
     function updateToggle($btn, enabled, small) {

@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('MOMENTUM_WEEK_VERSION', '1.2.0');
+define('MOMENTUM_WEEK_VERSION', '1.3.0');
 define('MOMENTUM_WEEK_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('MOMENTUM_WEEK_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -380,12 +380,34 @@ class Momentum_Week {
         );
 
         // Get settings
-        $options = get_option('momentum_week_settings');
+        $options   = get_option('momentum_week_settings');
+        $file_id   = isset($options['excel_file_id']) ? absint($options['excel_file_id']) : 0;
+        $file_path = $file_id ? get_attached_file($file_id) : '';
 
-        // Get file URL
-        $excel_url = '';
-        if (!empty($options['excel_file_id'])) {
-            $excel_url = wp_get_attachment_url($options['excel_file_id']);
+        // Parse Excel once (PHP, cached) and embed directly in the page HTML.
+        // This eliminates the AJAX round-trip entirely — the worker gets data
+        // the moment it starts, with no network delay.
+        $has_inline_data = false;
+        if ($file_path && file_exists($file_path)) {
+            $cache_key = 'mw_data_' . md5($file_path . filemtime($file_path));
+            $data      = get_transient($cache_key);
+
+            if ($data === false) {
+                $data = momentum_week_parse_excel($file_path);
+                if (!is_wp_error($data)) {
+                    set_transient($cache_key, $data, WEEK_IN_SECONDS);
+                }
+            }
+
+            if (!is_wp_error($data) && !empty($data['prices'])) {
+                // Inline as a JS variable — available before any script runs
+                wp_add_inline_script(
+                    'momentum-week',
+                    'window.__momentumData__=' . wp_json_encode($data) . ';',
+                    'before'
+                );
+                $has_inline_data = true;
+            }
         }
 
         // Localize script
@@ -393,7 +415,7 @@ class Momentum_Week {
             'ajaxUrl'   => admin_url('admin-ajax.php'),
             'nonce'     => wp_create_nonce('momentum_week_data'),
             'workerUrl' => MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-worker.js',
-            'hasFile'   => !empty($excel_url),
+            'hasFile'   => $file_id > 0,
             'defaults'  => array(
                 'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 13,
                 'holding'  => isset($options['default_holding']) ? intval($options['default_holding']) : 4,
