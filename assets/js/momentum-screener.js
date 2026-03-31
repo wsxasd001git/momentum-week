@@ -64,14 +64,46 @@
             return;
         }
 
+        if (!momentumScreener.hasFile) {
+            showError(momentumScreener.strings.noFile);
+            return;
+        }
+
         $('#ms-loading').show();
         $('#ms-error').hide();
         $('#ms-content').hide();
 
+        // Step 1: PHP has already parsed the Excel.  Fetch the JSON via AJAX.
+        $.ajax({
+            url:  momentumScreener.ajaxUrl,
+            type: 'POST',
+            data: {
+                action: 'momentum_week_get_data',
+                nonce:  momentumScreener.nonce
+            },
+            success: function(resp) {
+                if (!resp.success) {
+                    showError(resp.data && resp.data.message
+                        ? resp.data.message
+                        : momentumScreener.strings.error);
+                    $('#ms-loading').hide();
+                    return;
+                }
+                // Step 2: spin up the worker and pass the parsed data
+                initWorker(resp.data.prices, resp.data.dividends || null);
+            },
+            error: function() {
+                $('#ms-loading').hide();
+                showError(momentumScreener.strings.error + ': не удалось связаться с сервером');
+            }
+        });
+    }
+
+    function initWorker(pricesRaw, dividendsRaw) {
         worker = new Worker(momentumScreener.workerUrl);
 
         worker.onmessage = function(e) {
-            const msg = e.data;
+            var msg = e.data;
 
             if (msg.type === 'ready') {
                 tickersCache = msg.stats.tickers;
@@ -108,11 +140,11 @@
             showError('Ошибка воркера: ' + (e.message || 'проверьте консоль браузера'));
         };
 
-        // Tell the worker to fetch + parse everything itself
+        // Pass raw row-object arrays to the worker (no SheetJS needed in worker)
         worker.postMessage({
-            type:       'init',
-            excelUrl:   momentumScreener.excelUrl,
-            sheetjsUrl: momentumScreener.sheetjsUrl
+            type:         'init',
+            pricesRaw:    pricesRaw,
+            dividendsRaw: dividendsRaw
         });
     }
 

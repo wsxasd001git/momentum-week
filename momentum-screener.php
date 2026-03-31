@@ -66,6 +66,13 @@ class Momentum_Week {
         // AJAX hooks
         add_action('wp_ajax_momentum_week_get_file_url', array($this, 'ajax_get_file_url'));
         add_action('wp_ajax_nopriv_momentum_week_get_file_url', array($this, 'ajax_get_file_url'));
+
+        // New: serve pre-parsed JSON data (no SheetJS in browser)
+        add_action('wp_ajax_momentum_week_get_data', array($this, 'ajax_get_data'));
+        add_action('wp_ajax_nopriv_momentum_week_get_data', array($this, 'ajax_get_data'));
+
+        // Clear parsed-data cache when admin saves a new Excel file
+        add_action('update_option_momentum_week_settings', array($this, 'clear_data_cache'));
     }
 
     /**
@@ -355,15 +362,6 @@ class Momentum_Week {
             true
         );
 
-        // Enqueue SheetJS for Excel parsing
-        wp_enqueue_script(
-            'sheetjs',
-            'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
-            array(),
-            '0.18.5',
-            true
-        );
-
         // Enqueue plugin styles
         wp_enqueue_style(
             'momentum-week',
@@ -372,11 +370,11 @@ class Momentum_Week {
             MOMENTUM_WEEK_VERSION
         );
 
-        // Enqueue plugin script
+        // Enqueue plugin script (no sheetjs dependency — parsing happens server-side)
         wp_enqueue_script(
             'momentum-week',
             MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-screener.js',
-            array('jquery', 'chartjs', 'sheetjs'),
+            array('jquery', 'chartjs'),
             MOMENTUM_WEEK_VERSION,
             true
         );
@@ -392,19 +390,20 @@ class Momentum_Week {
 
         // Localize script
         wp_localize_script('momentum-week', 'momentumScreener', array(
-            'excelUrl'  => $excel_url,
+            'ajaxUrl'   => admin_url('admin-ajax.php'),
+            'nonce'     => wp_create_nonce('momentum_week_data'),
             'workerUrl' => MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-worker.js',
-            'sheetjsUrl' => 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
-            'defaults' => array(
+            'hasFile'   => !empty($excel_url),
+            'defaults'  => array(
                 'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 13,
-                'holding' => isset($options['default_holding']) ? intval($options['default_holding']) : 4,
-                'topn' => isset($options['default_topn']) ? intval($options['default_topn']) : 10,
+                'holding'  => isset($options['default_holding']) ? intval($options['default_holding']) : 4,
+                'topn'     => isset($options['default_topn'])    ? intval($options['default_topn'])    : 10,
             ),
             'strings' => array(
                 'loading' => __('Загрузка данных...', 'momentum-week'),
-                'error' => __('Ошибка загрузки данных', 'momentum-week'),
-                'noData' => __('Данные не найдены', 'momentum-week'),
-                'noFile' => __('Excel файл не настроен. Перейдите в Настройки > Momentum Week', 'momentum-week'),
+                'error'   => __('Ошибка загрузки данных', 'momentum-week'),
+                'noData'  => __('Данные не найдены', 'momentum-week'),
+                'noFile'  => __('Excel файл не настроен. Перейдите в Настройки > Momentum Week', 'momentum-week'),
             )
         ));
     }
@@ -435,7 +434,7 @@ class Momentum_Week {
     }
 
     /**
-     * AJAX handler for getting file URL
+     * AJAX handler for getting file URL (legacy, kept for compatibility)
      */
     public function ajax_get_file_url() {
         $options = get_option('momentum_week_settings');
@@ -448,6 +447,61 @@ class Momentum_Week {
         wp_send_json_success(array(
             'excelUrl' => $excel_url
         ));
+    }
+
+    /**
+     * AJAX handler: return pre-parsed Excel data as JSON (cached).
+     * No SheetJS needed in the browser — PHP does the parsing once.
+     */
+    public function ajax_get_data() {
+        check_ajax_referer('momentum_week_data', 'nonce');
+
+        $options = get_option('momentum_week_settings');
+
+        if (empty($options['excel_file_id'])) {
+            wp_send_json_error(array('message' => __('Excel файл не настроен. Перейдите в Настройки > Momentum Week', 'momentum-week')));
+            return;
+        }
+
+        $file_path = get_attached_file($options['excel_file_id']);
+
+        if (!$file_path || !file_exists($file_path)) {
+            wp_send_json_error(array('message' => __('Excel файл не найден на сервере', 'momentum-week')));
+            return;
+        }
+
+        // Cache key changes automatically when the file is modified
+        $cache_key = 'mw_data_' . md5($file_path . filemtime($file_path));
+        $cached    = get_transient($cache_key);
+
+        if ($cached !== false) {
+            wp_send_json_success($cached);
+            return;
+        }
+
+        $data = momentum_week_parse_excel($file_path);
+
+        if (is_wp_error($data)) {
+            wp_send_json_error(array('message' => $data->get_error_message()));
+            return;
+        }
+
+        // Cache for one week (auto-invalidated when file mtime changes)
+        set_transient($cache_key, $data, WEEK_IN_SECONDS);
+
+        wp_send_json_success($data);
+    }
+
+    /**
+     * Wipe all cached parsed-data transients when settings are saved.
+     */
+    public function clear_data_cache() {
+        global $wpdb;
+        $wpdb->query(
+            "DELETE FROM {$wpdb->options}
+             WHERE option_name LIKE '_transient_mw_data_%'
+                OR option_name LIKE '_transient_timeout_mw_data_%'"
+        );
     }
 }
 
@@ -475,4 +529,242 @@ function momentum_week_activate() {
 register_deactivation_hook(__FILE__, 'momentum_week_deactivate');
 function momentum_week_deactivate() {
     // Nothing to clean up
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHP xlsx parser — no external dependencies (uses ZipArchive + DOMDocument)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse an .xlsx file and return price + dividend data as plain PHP arrays.
+ *
+ * Returns array( 'prices' => [...], 'dividends' => [...] | null )
+ * or WP_Error on failure.
+ *
+ * Each element of 'prices' / 'dividends' is an associative array:
+ *   [ 'Time' => <Excel serial number as float>, 'TICKER' => <price as float|null>, ... ]
+ *
+ * The JavaScript side already knows how to convert Excel serial dates via
+ * parseExcelDate(), so we intentionally leave dates as serial numbers.
+ */
+function momentum_week_parse_excel($file_path) {
+    if (!class_exists('ZipArchive')) {
+        return new WP_Error('no_zip', 'PHP ZipArchive extension is not available');
+    }
+
+    $zip = new ZipArchive();
+    if ($zip->open($file_path) !== true) {
+        return new WP_Error('open_failed', 'Cannot open Excel file: ' . basename($file_path));
+    }
+
+    try {
+        $shared = _mw_xlsx_shared_strings($zip);
+        $sheets = _mw_xlsx_sheet_map($zip);
+
+        // Find the price sheet
+        $price_sheet = null;
+        foreach (array('цены', 'Цены', 'prices', 'Prices') as $name) {
+            if (isset($sheets[$name])) { $price_sheet = $sheets[$name]; break; }
+        }
+        if (!$price_sheet) {
+            $zip->close();
+            return new WP_Error('no_price_sheet',
+                'Sheet "цены" not found. Available sheets: ' . implode(', ', array_keys($sheets)));
+        }
+
+        $prices = _mw_xlsx_parse_sheet($zip, $price_sheet, $shared);
+        if (empty($prices)) {
+            $zip->close();
+            return new WP_Error('empty_sheet', 'Price sheet "цены" is empty');
+        }
+
+        // Find dividend sheet (optional)
+        $div_data = null;
+        foreach (array('Дивид', 'дивиденды', 'Дивиденды', 'dividends', 'Dividends') as $name) {
+            if (isset($sheets[$name])) {
+                $div_data = _mw_xlsx_parse_sheet($zip, $sheets[$name], $shared);
+                break;
+            }
+        }
+
+        $zip->close();
+
+        return array(
+            'prices'    => $prices,
+            'dividends' => $div_data,
+        );
+
+    } catch (Exception $e) {
+        $zip->close();
+        return new WP_Error('parse_error', $e->getMessage());
+    }
+}
+
+/**
+ * Parse xl/sharedStrings.xml → indexed array of strings.
+ */
+function _mw_xlsx_shared_strings($zip) {
+    $strings = array();
+    $xml_str = $zip->getFromName('xl/sharedStrings.xml');
+    if (!$xml_str) return $strings;
+
+    $dom = new DOMDocument();
+    if (!@$dom->loadXML($xml_str)) return $strings;
+
+    foreach ($dom->getElementsByTagName('si') as $si) {
+        // Rich text: concatenate all <t> descendants
+        $text  = '';
+        $t_els = $si->getElementsByTagName('t');
+        foreach ($t_els as $t) {
+            $text .= $t->textContent;
+        }
+        $strings[] = $text;
+    }
+
+    return $strings;
+}
+
+/**
+ * Parse xl/workbook.xml + xl/_rels/workbook.xml.rels
+ * → associative array [ sheet_name => 'xl/worksheets/sheet1.xml', ... ]
+ */
+function _mw_xlsx_sheet_map($zip) {
+    $map = array();
+
+    $wb_str = $zip->getFromName('xl/workbook.xml');
+    if (!$wb_str) return $map;
+
+    $rels_str = $zip->getFromName('xl/_rels/workbook.xml.rels');
+    $rels     = array();
+    if ($rels_str) {
+        $rdom = new DOMDocument();
+        if (@$rdom->loadXML($rels_str)) {
+            foreach ($rdom->getElementsByTagName('Relationship') as $rel) {
+                $rels[$rel->getAttribute('Id')] = $rel->getAttribute('Target');
+            }
+        }
+    }
+
+    $wdom = new DOMDocument();
+    if (!@$wdom->loadXML($wb_str)) return $map;
+
+    foreach ($wdom->getElementsByTagName('sheet') as $sheet) {
+        $name = $sheet->getAttribute('name');
+        // r:id attribute lives in the r namespace
+        $rid  = $sheet->getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+        if (!$rid) $rid = $sheet->getAttribute('r:id');
+
+        if ($rid && isset($rels[$rid])) {
+            $target = $rels[$rid];
+            // Targets are relative to xl/, e.g. "worksheets/sheet1.xml"
+            if (strpos($target, '/') !== 0 && strpos($target, 'xl/') !== 0) {
+                $target = 'xl/' . $target;
+            }
+            $map[$name] = $target;
+        }
+    }
+
+    return $map;
+}
+
+/**
+ * Parse a single worksheet XML file → array of row objects (associative arrays).
+ * First row is treated as the header row.
+ *
+ * Numbers are returned as PHP floats; strings as PHP strings; missing cells as null.
+ */
+function _mw_xlsx_parse_sheet($zip, $path, $shared_strings) {
+    $xml_str = $zip->getFromName($path);
+    if (!$xml_str) return array();
+
+    $dom = new DOMDocument();
+    if (!@$dom->loadXML($xml_str)) return array();
+
+    $headers  = null; // [ col_index => header_name ]
+    $rows_out = array();
+
+    foreach ($dom->getElementsByTagName('row') as $row_el) {
+        $row_values = array(); // col_index => value
+        $max_col    = 0;
+
+        foreach ($row_el->getElementsByTagName('c') as $cell) {
+            $ref  = $cell->getAttribute('r');       // e.g. "A1", "BC42"
+            $type = $cell->getAttribute('t');       // "s", "str", "b", "inlineStr", ""
+
+            // Resolve column index (0-based) from the cell reference
+            $col = _mw_xlsx_col_index($ref);
+            if ($col > $max_col) $max_col = $col;
+
+            // Cell value
+            $v_els = $cell->getElementsByTagName('v');
+            $val_str = ($v_els->length > 0) ? $v_els->item(0)->textContent : null;
+
+            if ($val_str === null || $val_str === '') {
+                // Check for inline string
+                $is_els = $cell->getElementsByTagName('is');
+                if ($is_els->length > 0) {
+                    $t_els = $is_els->item(0)->getElementsByTagName('t');
+                    $val_str = ($t_els->length > 0) ? $t_els->item(0)->textContent : null;
+                    $type = 'str';
+                }
+            }
+
+            if ($val_str === null) {
+                $row_values[$col] = null;
+                continue;
+            }
+
+            switch ($type) {
+                case 's': // shared string index
+                    $idx = (int) $val_str;
+                    $row_values[$col] = isset($shared_strings[$idx]) ? $shared_strings[$idx] : '';
+                    break;
+                case 'b': // boolean
+                    $row_values[$col] = (bool)(int)$val_str;
+                    break;
+                case 'str':
+                case 'inlineStr':
+                    $row_values[$col] = $val_str;
+                    break;
+                default: // number (prices, dates stored as Excel serials)
+                    $row_values[$col] = is_numeric($val_str) ? (float)$val_str : $val_str;
+            }
+        }
+
+        if ($headers === null) {
+            // First row → build header map
+            $headers = array();
+            for ($i = 0; $i <= $max_col; $i++) {
+                $headers[$i] = isset($row_values[$i]) ? (string)$row_values[$i] : '';
+            }
+        } else {
+            // Data row → build associative array
+            $obj = array();
+            foreach ($headers as $col => $name) {
+                if ($name === '') continue;
+                $obj[$name] = isset($row_values[$col]) ? $row_values[$col] : null;
+            }
+            $rows_out[] = $obj;
+        }
+    }
+
+    return $rows_out;
+}
+
+/**
+ * Convert a cell reference like "A1", "AB42", "ZZ100" to a 0-based column index.
+ * Row number is ignored.
+ */
+function _mw_xlsx_col_index($ref) {
+    // Strip digits from the end
+    preg_match('/^([A-Za-z]+)/', $ref, $m);
+    if (empty($m[1])) return 0;
+
+    $letters = strtoupper($m[1]);
+    $index   = 0;
+    $len     = strlen($letters);
+    for ($i = 0; $i < $len; $i++) {
+        $index = $index * 26 + (ord($letters[$i]) - 64); // A=1
+    }
+    return $index - 1; // 0-based
 }
