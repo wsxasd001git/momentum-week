@@ -394,6 +394,7 @@ class Momentum_Week {
         wp_localize_script('momentum-week', 'momentumScreener', array(
             'excelUrl'  => $excel_url,
             'workerUrl' => MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-worker.js',
+            'sheetjsUrl' => 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
             'defaults' => array(
                 'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 13,
                 'holding' => isset($options['default_holding']) ? intval($options['default_holding']) : 4,

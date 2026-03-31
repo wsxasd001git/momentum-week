@@ -1,73 +1,74 @@
 /**
- * Momentum Screener – Web Worker  (v4)
+ * Momentum Screener – Web Worker  (v5)
  *
- * Data transfer
- * ─────────────
- * The main thread packs priceData and dividendData into column-major
- * Float64Arrays and transfers them (Transferable, zero-copy).
- * The worker receives these buffers and creates per-ticker views with
- * .subarray() — also zero-copy.
+ * The worker owns the entire data pipeline:
+ *   1. Receives excelUrl + sheetjsUrl in 'init' message
+ *   2. importScripts(sheetjsUrl)  — loads XLSX library once (cached)
+ *   3. fetch(excelUrl)            — downloads the Excel file
+ *   4. XLSX.read(...)             — parses it (no cellDates → fast)
+ *   5. buildIndexes()             — builds typed-array structures
+ *   6. postMessage 'ready' + stats back to main thread
  *
- * Pre-indexed structures built from those views (one-time on 'init'):
- *   pricesByTicker[t]         – Float64Array view (NaN = missing)
- *   validRunByTicker[t]       – Uint16Array: consecutive valid-price count
- *   returnPrefixSum[t]        – Float64Array: prefix sum of weekly returns
- *   returnPrefixSumSq[t]      – Float64Array: prefix sum of returns²
- *   divPrefixByTicker[t]      – Float64Array: prefix sum of dividends
- *
- * Calculation phases
- * ──────────────────
- * Phase 1 – precomputeMomentumMatrix  O(n·m) — cached by phase1CacheKey.
- *   Depends on: lookback / skipWeeks / useDividends / useVolFilter /
- *               maxVol / useRiskAdj
- * Phase 2 – buildPortfolio            O(n/holdPer · topN) — always fast.
- *   Depends on: topN / holdingPeriod / useReturnFilter / minReturn / maxReturn
- *
- * Changing only Phase-2 parameters skips Phase 1 entirely.
+ * The main thread is never blocked by data work.
+ * All subsequent 'recalculate' messages only carry a lightweight settings object.
  */
 
 'use strict';
 
 // ─── State ───────────────────────────────────────────────────────────────────
 let tickersCache = null;
-let n = 0;   // number of time periods
-let m = 0;   // number of tickers
+let n = 0;
+let m = 0;
+let hasDivs = false;
 
-// Pre-indexed per-ticker structures
 let pricesByTicker    = {};
 let validRunByTicker  = {};
 let returnPrefixSum   = {};
 let returnPrefixSumSq = {};
 let divPrefixByTicker = {};
 let dates             = [];
-let hasDivs           = false;
 
-// Phase-1 cache
 let momentumMatrix = null;
 let phase1CacheKey = null;
 
 // ════════════════════════════════════════════════════════════════════════════
-// buildIndexes – called once after receiving Transferable data
+// Date helper — handles both Excel serial numbers and date strings
 // ════════════════════════════════════════════════════════════════════════════
 
-function buildIndexes(pricesFlat, divsFlat, dateInts) {
-    const tc = tickersCache;
+function parseExcelDate(val) {
+    if (val instanceof Date) return val;
+    if (typeof val === 'number') {
+        // Excel serial date: days since 1900-01-00 (with 1900 leap-year bug)
+        return new Date(Math.round((val - 25569) * 86400000));
+    }
+    return new Date(val);
+}
 
-    // Date objects
+// ════════════════════════════════════════════════════════════════════════════
+// buildIndexes — converts row-oriented JS objects to typed arrays
+// Called once after parsing. Raw priceData/dividendData are local and
+// will be GC'd after this returns.
+// ════════════════════════════════════════════════════════════════════════════
+
+function buildIndexes(priceData, dividendData) {
+    // Date array
     dates = new Array(n);
     for (let i = 0; i < n; i++) {
-        dates[i] = new Date(dateInts[i]);
+        dates[i] = parseExcelDate(priceData[i].Time);
     }
 
     for (let ti = 0; ti < m; ti++) {
-        const ticker = tc[ti];
-        const base   = ti * n;
+        const ticker = tickersCache[ti];
 
-        // Zero-copy view into the transferred buffer
-        const prices = pricesFlat.subarray(base, base + n);
+        // ── Price array ────────────────────────────────────────────────────
+        const prices = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            const v = priceData[i][ticker];
+            prices[i] = (v && v > 0) ? v : NaN;
+        }
         pricesByTicker[ticker] = prices;
 
-        // validRun[i] = length of consecutive run of valid prices ending at i
+        // ── Consecutive-valid-price count (O(1) continuity check) ──────────
         const run = new Uint16Array(n);
         run[0] = isNaN(prices[0]) ? 0 : 1;
         for (let i = 1; i < n; i++) {
@@ -75,16 +76,14 @@ function buildIndexes(pricesFlat, divsFlat, dateInts) {
         }
         validRunByTicker[ticker] = run;
 
-        // Return prefix sums for O(1) volatility computation
-        // pSum[i]  = Σ r[1..i],   pSumS[i] = Σ r²[1..i]
-        // where r[i] = (p[i]-p[i-1])/p[i-1]
+        // ── Return prefix sums (O(1) volatility) ───────────────────────────
         const pSum  = new Float64Array(n);
         const pSumS = new Float64Array(n);
         for (let i = 1; i < n; i++) {
             const p0 = prices[i - 1], p1 = prices[i];
             if (!isNaN(p0) && !isNaN(p1) && p0 > 0) {
                 const r = (p1 - p0) / p0;
-                pSum[i]  = pSum[i - 1]  + r;
+                pSum[i]  = pSum[i - 1] + r;
                 pSumS[i] = pSumS[i - 1] + r * r;
             } else {
                 pSum[i]  = pSum[i - 1];
@@ -94,11 +93,12 @@ function buildIndexes(pricesFlat, divsFlat, dateInts) {
         returnPrefixSum[ticker]   = pSum;
         returnPrefixSumSq[ticker] = pSumS;
 
-        // Dividend prefix sums (all-zero if no divsFlat)
+        // ── Dividend prefix sums (O(1) div sum for any range) ──────────────
         const dPrefix = new Float64Array(n + 1);
-        if (divsFlat) {
-            for (let i = 0; i < n; i++) {
-                dPrefix[i + 1] = dPrefix[i] + divsFlat[base + i];
+        if (dividendData) {
+            for (let i = 0; i < n && i < dividendData.length; i++) {
+                const row = dividendData[i];
+                dPrefix[i + 1] = dPrefix[i] + ((row && row[ticker]) ? row[ticker] : 0);
             }
         }
         divPrefixByTicker[ticker] = dPrefix;
@@ -113,10 +113,7 @@ function formatDate(date) {
     return date.toISOString().split('T')[0];
 }
 
-/**
- * O(1) volatility via prefix sums.
- * Window covers returns from (start+1) to end  →  count = end - start.
- */
+/** O(1) volatility — std-dev of returns over [start+1 .. end] × 100. */
 function calcVolFast(ticker, start, end) {
     const count = end - start;
     if (count < 2) return 0;
@@ -133,8 +130,8 @@ function getDivSum(ticker, from, to) {
     const f = Math.max(0, from);
     const t = Math.min(to, n - 1);
     if (f > t) return 0;
-    const prefix = divPrefixByTicker[ticker];
-    return prefix[t + 1] - prefix[f];
+    const p = divPrefixByTicker[ticker];
+    return p[t + 1] - p[f];
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -156,16 +153,16 @@ function precomputeMomentumMatrix(settings) {
         const scores = [];
 
         for (const ticker of tickersCache) {
-            const prices   = pricesByTicker[ticker];
-            const curP     = prices[i];
+            const prices  = pricesByTicker[ticker];
+            const curP    = prices[i];
             if (isNaN(curP)) continue;
 
             const pastIdx = i - lb - skip;
             if (pastIdx < 0) continue;
-            const pastP = prices[pastIdx];
+            const pastP   = prices[pastIdx];
             if (isNaN(pastP)) continue;
 
-            // O(1) data continuity check
+            // O(1) continuity check
             const volStart   = Math.max(0, pastIdx);
             const windowSize = i - volStart + 1;
             if (validRunByTicker[ticker][i] < windowSize) continue;
@@ -247,7 +244,6 @@ function buildPortfolio(settings) {
                 : prRet;
 
             periodReturn += stRet / selected.length;
-
             stockDetails.push({
                 ticker:    stock.ticker,
                 momentum:  stock.momentum,
@@ -318,9 +314,9 @@ function buildPortfolio(settings) {
     const annualVol   = volatility * Math.sqrt(periodsPerYear);
     const sharpeRatio = annualVol > 0 ? annualAvg / annualVol : 0;
 
-    const dsR         = portfolioValues.filter(v => v.return < avgReturn).map(v => v.return);
-    const downVol     = Math.sqrt(dsR.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / periods);
-    const annualDVol  = downVol * Math.sqrt(periodsPerYear);
+    const dsR          = portfolioValues.filter(v => v.return < avgReturn).map(v => v.return);
+    const downVol      = Math.sqrt(dsR.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / periods);
+    const annualDVol   = downVol * Math.sqrt(periodsPerYear);
     const sortinoRatio = annualDVol > 0 ? annualAvg / annualDVol : sharpeRatio;
 
     let peak = portfolioValues[0].value, maxDrawdown = 0;
@@ -366,18 +362,71 @@ self.onmessage = function(e) {
     const { type } = e.data;
 
     if (type === 'init') {
-        tickersCache = e.data.tickersCache;
-        n            = e.data.n;
-        m            = e.data.m;
-        hasDivs      = !!e.data.divsFlat;
+        const { excelUrl, sheetjsUrl } = e.data;
 
-        buildIndexes(e.data.pricesFlat, e.data.divsFlat, e.data.dateInts);
+        if (!excelUrl) {
+            self.postMessage({ type: 'error', message: 'Excel файл не настроен. Перейдите в Настройки > Momentum Week' });
+            return;
+        }
 
-        // Invalidate phase-1 cache (new data)
-        momentumMatrix = null;
-        phase1CacheKey = null;
+        // Load SheetJS inside the worker (doesn't block the main thread)
+        try {
+            importScripts(sheetjsUrl);
+        } catch (err) {
+            self.postMessage({ type: 'error', message: 'Не удалось загрузить SheetJS: ' + err.message });
+            return;
+        }
 
-        self.postMessage({ type: 'ready' });
+        // Fetch and parse Excel entirely inside the worker
+        fetch(excelUrl)
+            .then(function(r) {
+                if (!r.ok) throw new Error('Ошибка загрузки файла (HTTP ' + r.status + ')');
+                return r.arrayBuffer();
+            })
+            .then(function(buffer) {
+                // Parse without cellDates — much faster; dates handled by parseExcelDate()
+                const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+
+                if (!wb.SheetNames.includes('цены')) {
+                    throw new Error('Лист "цены" не найден. Доступные листы: ' + wb.SheetNames.join(', '));
+                }
+
+                const priceData = XLSX.utils.sheet_to_json(wb.Sheets['цены'], { defval: null });
+                if (!priceData || priceData.length === 0) throw new Error('Файл пуст');
+
+                const divNames    = ['Дивид', 'дивиденды', 'Дивиденды', 'dividends'];
+                const divSheetName = divNames.find(function(nm) { return wb.SheetNames.includes(nm); });
+                const dividendData = divSheetName
+                    ? XLSX.utils.sheet_to_json(wb.Sheets[divSheetName], { defval: null })
+                    : null;
+
+                // Set up module state
+                tickersCache = Object.keys(priceData[0]).filter(function(k) { return k !== 'Time'; });
+                n       = priceData.length;
+                m       = tickersCache.length;
+                hasDivs = !!dividendData;
+
+                // Build typed-array indexes (priceData/dividendData are local; GC'd after)
+                buildIndexes(priceData, dividendData);
+
+                // Reset phase-1 cache
+                momentumMatrix = null;
+                phase1CacheKey = null;
+
+                // Compute stats for the main thread to display
+                const lastRow     = priceData[n - 1];
+                const activeCount = tickersCache.filter(function(t) {
+                    return lastRow[t] != null && lastRow[t] !== '' && lastRow[t] > 0;
+                }).length;
+
+                self.postMessage({
+                    type: 'ready',
+                    stats: { n: n, m: m, activeTickers: activeCount, tickers: tickersCache }
+                });
+            })
+            .catch(function(err) {
+                self.postMessage({ type: 'error', message: err.message });
+            });
 
     } else if (type === 'recalculate') {
         const result = runBacktest(e.data.settings);

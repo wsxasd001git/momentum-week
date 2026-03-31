@@ -1,29 +1,24 @@
 /**
  * Momentum Screener for WordPress
- * Russian Stock Market Momentum Strategy Optimizer
+ * Main thread is responsible only for UI. All data work runs in the worker.
  */
 
 (function($) {
     'use strict';
 
-    // State
     let tickersCache = null;
-    let charts = {};
-    let recalculateTimeout = null;
-
-    // Web Worker
-    let worker = null;
-    let workerReady = false;
+    let charts       = {};
+    let recalcTimeout = null;
+    let worker        = null;
+    let workerReady   = false;
     let currentCalcId = 0;
 
-    // Lock flags
     let locks = {
         lookback: false, holding: false, topn: false,
         dividends: false, skip: false, vol: false,
         riskadj: false, return: false
     };
 
-    // Settings
     let settings = {
         lookbackPeriod: 13, holdingPeriod: 4, topN: 10,
         useDividends: true, skipWeeks: 4,
@@ -32,7 +27,7 @@
         useReturnFilter: false, minReturn: 30, maxReturn: 160
     };
 
-    // ─── Init ───────────────────────────────────────────────────────────────
+    // ─── Init ────────────────────────────────────────────────────────────────
 
     function init() {
         const $app = $('#momentum-screener-app');
@@ -58,10 +53,94 @@
         $('#ms-skip-weeks-value').text(settings.skipWeeks === 0 ? 'Выкл' : settings.skipWeeks + ' нед');
 
         bindEvents();
-        fetchData();
+        startWorker();
     }
 
-    // ─── Events ─────────────────────────────────────────────────────────────
+    // ─── Worker ──────────────────────────────────────────────────────────────
+
+    function startWorker() {
+        if (typeof Worker === 'undefined' || !momentumScreener.workerUrl) {
+            showError('Ваш браузер не поддерживает Web Workers. Обновите браузер.');
+            return;
+        }
+
+        $('#ms-loading').show();
+        $('#ms-error').hide();
+        $('#ms-content').hide();
+
+        worker = new Worker(momentumScreener.workerUrl);
+
+        worker.onmessage = function(e) {
+            const msg = e.data;
+
+            if (msg.type === 'ready') {
+                tickersCache = msg.stats.tickers;
+                $('#ms-stats').html(
+                    msg.stats.n + ' недель &bull; ' +
+                    msg.stats.m + ' тикеров (сейчас торгуется ' + msg.stats.activeTickers + ')'
+                );
+                workerReady = true;
+                $('#ms-loading').hide();
+                $('#ms-content').show();
+                sendToWorker();
+
+            } else if (msg.type === 'result') {
+                if (msg.id !== currentCalcId) return;
+                setLoadingState(false);
+                if (msg.error) { showError(msg.error); return; }
+                $('#ms-error').hide();
+                updateMetrics(msg.metrics);
+                updateCharts(msg.portfolioValues);
+                updateRecommendations(msg.currentRecommendations);
+                updateHistory(msg.detailedTrades);
+                updateTips(msg.tipMetrics);
+
+            } else if (msg.type === 'error') {
+                $('#ms-loading').hide();
+                setLoadingState(false);
+                showError(msg.message);
+            }
+        };
+
+        worker.onerror = function(e) {
+            $('#ms-loading').hide();
+            setLoadingState(false);
+            showError('Ошибка воркера: ' + (e.message || 'проверьте консоль браузера'));
+        };
+
+        // Tell the worker to fetch + parse everything itself
+        worker.postMessage({
+            type:       'init',
+            excelUrl:   momentumScreener.excelUrl,
+            sheetjsUrl: momentumScreener.sheetjsUrl
+        });
+    }
+
+    function sendToWorker() {
+        if (!worker || !workerReady) return;
+        currentCalcId++;
+        worker.postMessage({
+            type:     'recalculate',
+            settings: Object.assign({}, settings),
+            id:       currentCalcId
+        });
+    }
+
+    function debouncedRecalculate() {
+        clearTimeout(recalcTimeout);
+        setLoadingState(true);
+        recalcTimeout = setTimeout(sendToWorker, 500);
+    }
+
+    function setLoadingState(on) {
+        $('#ms-metrics').css('opacity', on ? '0.5' : '1');
+    }
+
+    function showError(msg) {
+        $('#ms-error').show().find('p').text(msg);
+    }
+
+    // ─── Events ──────────────────────────────────────────────────────────────
 
     function bindEvents() {
         if (!locks.lookback) {
@@ -152,204 +231,17 @@
             .data('enabled', enabled);
     }
 
-    // ─── Data fetching ───────────────────────────────────────────────────────
+    // ─── UI updates ───────────────────────────────────────────────────────────
 
-    function fetchData() {
-        $('#ms-loading').show();
-        $('#ms-error').hide();
-        $('#ms-content').hide();
-
-        if (!momentumScreener.excelUrl) {
-            $('#ms-loading').hide();
-            showError(momentumScreener.strings.noFile);
-            return;
-        }
-
-        fetch(momentumScreener.excelUrl)
-            .then(r => {
-                if (!r.ok) throw new Error('Ошибка загрузки файла');
-                return r.arrayBuffer();
-            })
-            .then(buffer => {
-                let priceData, dividendData;
-                try {
-                    const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
-                    if (!wb.SheetNames.includes('цены')) {
-                        throw new Error('Лист "цены" не найден. Доступные листы: ' + wb.SheetNames.join(', '));
-                    }
-                    priceData = XLSX.utils.sheet_to_json(wb.Sheets['цены'], { defval: null });
-                    if (!priceData || priceData.length === 0) throw new Error('Файл пуст');
-
-                    const divName = ['Дивид','дивиденды','Дивиденды','dividends']
-                        .find(n => wb.SheetNames.includes(n));
-                    dividendData = divName
-                        ? XLSX.utils.sheet_to_json(wb.Sheets[divName], { defval: null })
-                        : null;
-                } catch (err) {
-                    $('#ms-loading').hide();
-                    showError(err.message);
-                    return;
-                }
-
-                finishLoading(priceData, dividendData);
-            })
-            .catch(err => {
-                $('#ms-loading').hide();
-                showError(err.message || 'Ошибка загрузки данных');
-            });
-    }
-
-    /**
-     * Pack row-oriented JS objects into column-major Float64Arrays.
-     * These can be transferred to the worker in O(1) (zero-copy).
-     */
-    function packData(priceData, dividendData, tickers) {
-        const n = priceData.length;
-        const m = tickers.length;
-
-        // column-major: [tickerIdx * n + timeIdx]
-        const pricesFlat = new Float64Array(n * m);
-        for (let ti = 0; ti < m; ti++) {
-            const ticker = tickers[ti];
-            const base   = ti * n;
-            for (let i = 0; i < n; i++) {
-                const v = priceData[i][ticker];
-                pricesFlat[base + i] = (v && v > 0) ? v : NaN;
-            }
-        }
-
-        let divsFlat = null;
-        if (dividendData) {
-            divsFlat = new Float64Array(n * m);
-            for (let ti = 0; ti < m; ti++) {
-                const ticker = tickers[ti];
-                const base   = ti * n;
-                for (let i = 0; i < n && i < dividendData.length; i++) {
-                    const row = dividendData[i];
-                    divsFlat[base + i] = (row && row[ticker]) ? row[ticker] : 0;
-                }
-            }
-        }
-
-        const dateInts = new Float64Array(n);
-        for (let i = 0; i < n; i++) {
-            dateInts[i] = new Date(priceData[i].Time).getTime();
-        }
-
-        return { pricesFlat, divsFlat, dateInts, n, m };
-    }
-
-    function finishLoading(priceData, dividendData) {
-        $('#ms-loading').hide();
-
-        tickersCache = Object.keys(priceData[0]).filter(k => k !== 'Time');
-
-        // Compute stats while priceData is still available
-        const lastRow     = priceData[priceData.length - 1];
-        const activeCount = tickersCache.filter(k => lastRow[k] != null && lastRow[k] !== '').length;
-        $('#ms-stats').html(
-            priceData.length + ' недель &bull; ' +
-            tickersCache.length + ' тикеров (сейчас торгуется ' + activeCount + ')'
-        );
-
-        $('#ms-content').show();
-
-        if (typeof Worker === 'undefined' || !momentumScreener.workerUrl) {
-            showError('Ваш браузер не поддерживает Web Workers. Обновите браузер.');
-            return;
-        }
-
-        // Convert to typed arrays — fast, avoids huge structured clone in postMessage
-        const packed = packData(priceData, dividendData, tickersCache);
-
-        // priceData and dividendData are no longer needed — free them
-        priceData    = null;
-        dividendData = null;
-
-        setupWorker(packed);
-    }
-
-    // ─── Worker management ───────────────────────────────────────────────────
-
-    function setupWorker(packed) {
-        if (worker) worker.terminate();
-
-        worker      = new Worker(momentumScreener.workerUrl);
-        workerReady = false;
-
-        worker.onmessage = function(e) {
-            const msg = e.data;
-            if (msg.type === 'ready') {
-                workerReady = true;
-                sendToWorker();  // kick off first calculation
-            } else if (msg.type === 'result') {
-                if (msg.id !== currentCalcId) return;  // stale
-                setLoadingState(false);
-                if (msg.error) { showError(msg.error); return; }
-                $('#ms-error').hide();
-                updateMetrics(msg.metrics);
-                updateCharts(msg.portfolioValues);
-                updateRecommendations(msg.currentRecommendations);
-                updateHistory(msg.detailedTrades);
-                updateTips(msg.tipMetrics);
-            }
-        };
-
-        worker.onerror = function(e) {
-            setLoadingState(false);
-            showError('Ошибка воркера: ' + (e.message || 'проверьте консоль браузера'));
-        };
-
-        // Build transfer list — buffers move to worker with zero copy
-        const transferList = [packed.pricesFlat.buffer, packed.dateInts.buffer];
-        if (packed.divsFlat) transferList.push(packed.divsFlat.buffer);
-
-        worker.postMessage({
-            type:      'init',
-            pricesFlat: packed.pricesFlat,
-            divsFlat:   packed.divsFlat,
-            dateInts:   packed.dateInts,
-            tickersCache,
-            n: packed.n,
-            m: packed.m
-        }, transferList);
-    }
-
-    function sendToWorker() {
-        if (!worker || !workerReady) return;
-        currentCalcId++;
-        worker.postMessage({
-            type:     'recalculate',
-            settings: Object.assign({}, settings),
-            id:       currentCalcId
-        });
-    }
-
-    function debouncedRecalculate() {
-        clearTimeout(recalculateTimeout);
-        setLoadingState(true);
-        recalculateTimeout = setTimeout(sendToWorker, 500);
-    }
-
-    function setLoadingState(loading) {
-        $('#ms-metrics').css('opacity', loading ? '0.5' : '1');
-    }
-
-    function showError(message) {
-        $('#ms-error').show().find('p').text(message);
-    }
-
-    // ─── UI updates ──────────────────────────────────────────────────────────
-
-    function updateMetrics(metrics) {
-        $('#ms-total-return').text(metrics.totalReturn + '%');
-        $('#ms-annual-return').text(metrics.annualReturn + '%');
-        $('#ms-sharpe').text(metrics.sharpeRatio);
-        $('#ms-sortino').text(metrics.sortinoRatio);
-        $('#ms-drawdown').text(metrics.maxDrawdown + '%');
-        $('#ms-avg-return').text(metrics.avgReturn + '%');
-        $('#ms-volatility').text(metrics.volatility + '%');
-        $('#ms-trades').text(metrics.trades + ' за ' + metrics.years + ' лет');
+    function updateMetrics(m) {
+        $('#ms-total-return').text(m.totalReturn + '%');
+        $('#ms-annual-return').text(m.annualReturn + '%');
+        $('#ms-sharpe').text(m.sharpeRatio);
+        $('#ms-sortino').text(m.sortinoRatio);
+        $('#ms-drawdown').text(m.maxDrawdown + '%');
+        $('#ms-avg-return').text(m.avgReturn + '%');
+        $('#ms-volatility').text(m.volatility + '%');
+        $('#ms-trades').text(m.trades + ' за ' + m.years + ' лет');
     }
 
     function updateCharts(portfolioValues) {
@@ -364,12 +256,11 @@
             const ctx = document.getElementById('ms-equity-chart').getContext('2d');
             charts.equity = new Chart(ctx, {
                 type: 'line',
-                data: {
-                    labels,
-                    datasets: [{ label: 'Стоимость портфеля (руб)', data: equityData,
-                        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
-                        fill: true, tension: 0.1 }]
-                },
+                data: { labels, datasets: [{
+                    label: 'Стоимость портфеля (руб)', data: equityData,
+                    borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
+                    fill: true, tension: 0.1
+                }] },
                 options: { responsive: true, animation: false,
                     plugins: { legend: { position: 'top' } },
                     scales: { y: { beginAtZero: false } } }
@@ -379,9 +270,7 @@
         const recent       = portfolioValues.slice(-50);
         const recentLabels = recent.map(v => v.date);
         const returnData   = recent.map(v => v.return);
-        const colors       = recent.map(v =>
-            v.return >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(239,68,68,0.7)'
-        );
+        const colors       = recent.map(v => v.return >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(239,68,68,0.7)');
 
         if (charts.returns) {
             charts.returns.data.labels = recentLabels;
@@ -392,10 +281,10 @@
             const ctx = document.getElementById('ms-returns-chart').getContext('2d');
             charts.returns = new Chart(ctx, {
                 type: 'bar',
-                data: { labels: recentLabels,
-                    datasets: [{ label: 'Доходность периода (%)', data: returnData, backgroundColor: colors }] },
-                options: { responsive: true, animation: false,
-                    plugins: { legend: { position: 'top' } } }
+                data: { labels: recentLabels, datasets: [{
+                    label: 'Доходность периода (%)', data: returnData, backgroundColor: colors
+                }] },
+                options: { responsive: true, animation: false, plugins: { legend: { position: 'top' } } }
             });
         }
     }
