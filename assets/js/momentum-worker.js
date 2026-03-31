@@ -1,71 +1,114 @@
 /**
- * Momentum Screener - Web Worker
- * Runs heavy backtest calculations off the main thread.
+ * Momentum Screener – Web Worker  (v3 – O(n·m) Phase 1)
  *
- * Optimisations vs v1:
- *  - Data is pre-indexed per ticker (pricesByTicker / divPrefixByTicker)
- *    so hot-loop lookups are O(1) array reads instead of object-key hashes.
- *  - Dividend sums use prefix arrays: O(1) per query instead of O(k).
- *  - Calculation is split into two phases:
- *      Phase 1 – precompute momentum scores for every week  (expensive)
- *      Phase 2 – build portfolio using cached scores        (cheap)
- *    A cache key tracks the settings that affect Phase 1.
- *    When only topN / holdingPeriod / returnFilter change → skip Phase 1.
+ * Architecture
+ * ────────────
+ * On 'init':
+ *   buildIndexes() converts row-oriented data to column-oriented typed arrays
+ *   and precomputes:
+ *     pricesByTicker[t]          – Float64Array of prices  (NaN = missing)
+ *     validRunByTicker[t]        – Uint16Array: consecutive-valid-price count
+ *     returnPrefixSum[t]         – Float64Array: cumulative sum of weekly returns
+ *     returnPrefixSumSq[t]       – Float64Array: cumulative sum of returns²
+ *     divPrefixByTicker[t]       – Float64Array: cumulative dividend sums
+ *
+ * On 'recalculate':
+ *   Phase 1  – precomputeMomentumMatrix (expensive, depends on lookback/skip/
+ *              dividends/vol/riskAdj).  Now O(n·m) thanks to prefix-sum vol
+ *              and validRun continuity check.  Cached via phase1CacheKey.
+ *   Phase 2  – buildPortfolio (cheap, depends on topN/holdingPeriod/returnFilter).
+ *              Re-slices cached scores.
  */
 
 'use strict';
 
-// ─── Raw data (set once on 'init') ──────────────────────────────────────────
-let priceData    = null;
-let dividendData = null;
-let tickersCache = null;
+// ─── Raw data ───────────────────────────────────────────────────────────────
+let priceData     = null;
+let dividendData  = null;
+let tickersCache  = null;
 
-// ─── Pre-indexed structures (built once on 'init') ──────────────────────────
-let pricesByTicker   = {};   // ticker → Float64Array[timeIdx]  (NaN = missing)
-let divPrefixByTicker = {};  // ticker → Float64Array[timeIdx+1] (prefix sums)
-let dates = [];               // Date objects for every row
+// ─── Pre-indexed structures ─────────────────────────────────────────────────
+let pricesByTicker       = {};  // ticker → Float64Array[n]
+let validRunByTicker     = {};  // ticker → Uint16Array[n]  (consecutive valid cnt)
+let returnPrefixSum      = {};  // ticker → Float64Array[n] (prefix sum of returns)
+let returnPrefixSumSq    = {};  // ticker → Float64Array[n] (prefix sum of returns²)
+let divPrefixByTicker    = {};  // ticker → Float64Array[n+1]
+let dates                = [];  // Date[n]
 
-// ─── Phase-1 cache ──────────────────────────────────────────────────────────
-let momentumMatrix  = null;   // Array[timeIdx] → sorted score objects (or null)
+// ─── Phase 1 cache ──────────────────────────────────────────────────────────
+let momentumMatrix  = null;
 let phase1CacheKey  = null;
 
 // ════════════════════════════════════════════════════════════════════════════
-// Pre-indexing  (runs once after data arrives)
+// buildIndexes – runs once on 'init'
 // ════════════════════════════════════════════════════════════════════════════
 
 function buildIndexes() {
     const n = priceData.length;
+    const m = tickersCache.length;
 
-    // Date cache
+    // ── Date cache ──────────────────────────────────────────────────────────
     dates = new Array(n);
     for (let i = 0; i < n; i++) {
         dates[i] = new Date(priceData[i].Time);
     }
 
-    // Price arrays per ticker
-    pricesByTicker = {};
-    for (const ticker of tickersCache) {
-        const arr = new Float64Array(n);
+    // ── Per-ticker arrays ───────────────────────────────────────────────────
+    for (let ti = 0; ti < m; ti++) {
+        const ticker = tickersCache[ti];
+
+        // prices
+        const prices = new Float64Array(n);
         for (let i = 0; i < n; i++) {
             const v = priceData[i][ticker];
-            arr[i] = (v && v > 0) ? v : NaN;
+            prices[i] = (v && v > 0) ? v : NaN;
         }
-        pricesByTicker[ticker] = arr;
-    }
+        pricesByTicker[ticker] = prices;
 
-    // Dividend prefix sums per ticker (length = n+1, index 0 = 0)
-    divPrefixByTicker = {};
-    if (dividendData) {
-        for (const ticker of tickersCache) {
-            const prefix = new Float64Array(n + 1); // prefix[0] = 0
+        // validRun: validRun[i] = number of consecutive non-NaN prices ending
+        // at index i (inclusive).  validRun[i] >= windowSize ⇒ data is
+        // continuous over the window.
+        const run = new Uint16Array(n);
+        run[0] = isNaN(prices[0]) ? 0 : 1;
+        for (let i = 1; i < n; i++) {
+            run[i] = isNaN(prices[i]) ? 0 : run[i - 1] + 1;
+        }
+        validRunByTicker[ticker] = run;
+
+        // Weekly returns and their prefix sums (for O(1) volatility).
+        // return[i] = (prices[i] - prices[i-1]) / prices[i-1], i >= 1
+        // prefixSum[0] = 0,  prefixSum[i] = sum(return[1..i])
+        // prefixSumSq[0] = 0, prefixSumSq[i] = sum(return[1..i]²)
+        const pSum  = new Float64Array(n);
+        const pSumS = new Float64Array(n);
+        // pSum[0] = pSumS[0] = 0 (default for Float64Array)
+        for (let i = 1; i < n; i++) {
+            const p0 = prices[i - 1], p1 = prices[i];
+            if (!isNaN(p0) && !isNaN(p1) && p0 > 0) {
+                const r = (p1 - p0) / p0;
+                pSum[i]  = pSum[i - 1]  + r;
+                pSumS[i] = pSumS[i - 1] + r * r;
+            } else {
+                pSum[i]  = pSum[i - 1];
+                pSumS[i] = pSumS[i - 1];
+            }
+        }
+        returnPrefixSum[ticker]   = pSum;
+        returnPrefixSumSq[ticker] = pSumS;
+
+        // Dividend prefix sums
+        const dPrefix = new Float64Array(n + 1);
+        if (dividendData) {
             for (let i = 0; i < n; i++) {
                 const row = dividendData[i];
-                const d = (row && row[ticker]) ? row[ticker] : 0;
-                prefix[i + 1] = prefix[i] + d;
+                dPrefix[i + 1] = dPrefix[i] + ((row && row[ticker]) ? row[ticker] : 0);
             }
-            divPrefixByTicker[ticker] = prefix;
         }
+        divPrefixByTicker[ticker] = dPrefix;
     }
+
+    // Free raw data references (no longer needed, indexes replace them)
+    // Keep priceData only for row count; dividendData likewise.
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -76,37 +119,29 @@ function formatDate(date) {
     return date.toISOString().split('T')[0];
 }
 
-/** Annualised weekly volatility (weekly std-dev * 100). */
-function calcVol(prices, start, end) {
-    // prices is a Float64Array; [start, end] inclusive
-    const len = end - start + 1;
-    if (len < 2) return 0;
+/**
+ * O(1) volatility via prefix sums.
+ * Returns annualised weekly std-dev × 100.
+ * Window: returns from index (start+1) to (end), i.e. count = end - start.
+ */
+function calcVolFast(ticker, start, end) {
+    const count = end - start;
+    if (count < 2) return 0;
 
-    let sumR = 0, count = 0;
-    const returns = new Float64Array(len - 1);
-    for (let i = start + 1; i <= end; i++) {
-        const p0 = prices[i - 1], p1 = prices[i];
-        if (!isNaN(p0) && !isNaN(p1) && p0 > 0) {
-            const r = (p1 - p0) / p0;
-            returns[count++] = r;
-            sumR += r;
-        }
-    }
-    if (count === 0) return 0;
+    const pSum  = returnPrefixSum[ticker];
+    const pSumS = returnPrefixSumSq[ticker];
 
-    const avg = sumR / count;
-    let varSum = 0;
-    for (let i = 0; i < count; i++) {
-        const diff = returns[i] - avg;
-        varSum += diff * diff;
-    }
-    return Math.sqrt(varSum / count) * 100;
+    const sumR  = pSum[end]  - pSum[start];
+    const sumR2 = pSumS[end] - pSumS[start];
+
+    const mean     = sumR / count;
+    const variance = sumR2 / count - mean * mean;
+    return Math.sqrt(Math.max(0, variance)) * 100;
 }
 
-/** Dividend sum for ticker in row range [from, to] inclusive. */
+/** O(1) dividend sum for [from, to] inclusive. */
 function getDivSum(ticker, from, to) {
     const prefix = divPrefixByTicker[ticker];
-    if (!prefix) return 0;
     const f = Math.max(0, from);
     const t = Math.min(to, priceData.length - 1);
     if (f > t) return 0;
@@ -114,58 +149,51 @@ function getDivSum(ticker, from, to) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Phase 1 – pre-compute momentum scores for every week
+// Phase 1 – precompute momentum matrix  O(n · m)
 // ════════════════════════════════════════════════════════════════════════════
 
 function getPhase1Key(s) {
-    return `${s.lookbackPeriod}|${s.skipWeeks}|${s.useDividends}|${s.useVolFilter}|${s.maxVol}|${s.useRiskAdj}`;
+    return [s.lookbackPeriod, s.skipWeeks, s.useDividends,
+            s.useVolFilter, s.maxVol, s.useRiskAdj].join('|');
 }
 
-/**
- * Build momentumMatrix[i] = array of score objects sorted by momentum desc.
- * Only the columns (tickers) that have complete data in the window are included.
- * returnFilter is NOT applied here (it's applied in Phase 2 so cache stays reusable).
- */
 function precomputeMomentumMatrix(settings) {
-    const n = priceData.length;
-    const matrix = new Array(n).fill(null);
+    const n    = priceData.length;
     const skip = settings.skipWeeks;
     const lb   = settings.lookbackPeriod;
     const startMin = lb + skip;
+    const matrix = new Array(n).fill(null);
 
     for (let i = startMin; i < n; i++) {
         const scores = [];
 
         for (const ticker of tickersCache) {
             const prices = pricesByTicker[ticker];
-            const currentPrice = prices[i];
-            if (isNaN(currentPrice)) continue;
+            const curP   = prices[i];
+            if (isNaN(curP)) continue;
 
             const pastIdx = i - lb - skip;
             if (pastIdx < 0) continue;
-            const pastPrice = prices[pastIdx];
-            if (isNaN(pastPrice)) continue;
+            const pastP = prices[pastIdx];
+            if (isNaN(pastP)) continue;
 
-            // Check data continuity over the volatility window
-            const volStart = Math.max(0, i - lb - skip);
-            const expectedPts = i - volStart + 1;
-            let validPts = 0;
-            for (let j = volStart; j <= i; j++) {
-                if (!isNaN(prices[j])) validPts++;
-            }
-            if (validPts < expectedPts) continue;
+            // O(1) data continuity check via validRun
+            const volStart    = Math.max(0, pastIdx);
+            const windowSize  = i - volStart + 1;
+            if (validRunByTicker[ticker][i] < windowSize) continue;
 
-            const vol = calcVol(prices, volStart, i);
+            // O(1) volatility via prefix sums
+            const vol = calcVolFast(ticker, volStart, i);
             if (settings.useVolFilter && vol > settings.maxVol) continue;
 
-            const priceReturn = (currentPrice - pastPrice) / pastPrice;
+            // Return
+            const priceReturn = (curP - pastP) / pastP;
             let totalReturn = priceReturn;
 
             if (settings.useDividends && dividendData) {
                 const divStart = pastIdx + 1;
                 const divEnd   = skip > 0 ? i - skip : i;
-                const divSum   = getDivSum(ticker, divStart, divEnd);
-                totalReturn = priceReturn + divSum / pastPrice;
+                totalReturn = priceReturn + getDivSum(ticker, divStart, divEnd) / pastP;
             }
 
             let momentum = totalReturn;
@@ -173,7 +201,7 @@ function precomputeMomentumMatrix(settings) {
                 momentum = (totalReturn * 100) / vol;
             }
 
-            scores.push({ ticker, momentum, price: currentPrice, volatility: vol, rawReturn: totalReturn });
+            scores.push({ ticker, momentum, price: curP, volatility: vol, rawReturn: totalReturn });
         }
 
         scores.sort((a, b) => b.momentum - a.momentum);
@@ -184,18 +212,18 @@ function precomputeMomentumMatrix(settings) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Phase 2 – build portfolio from (cached) momentum matrix
+// Phase 2 – build portfolio from cached momentum matrix
 // ════════════════════════════════════════════════════════════════════════════
 
 function buildPortfolio(settings) {
-    const n         = priceData.length;
-    const startIdx  = settings.lookbackPeriod + settings.skipWeeks;
-    const holdPer   = settings.holdingPeriod;
-    const topN      = settings.topN;
-    const useRetF   = settings.useReturnFilter;
-    const minRet    = settings.minReturn;
-    const maxRet    = settings.maxReturn;
-    const useDiv    = settings.useDividends && !!dividendData;
+    const n        = priceData.length;
+    const startIdx = settings.lookbackPeriod + settings.skipWeeks;
+    const holdPer  = settings.holdingPeriod;
+    const topN     = settings.topN;
+    const useRetF  = settings.useReturnFilter;
+    const minRet   = settings.minReturn;
+    const maxRet   = settings.maxReturn;
+    const useDiv   = settings.useDividends && !!dividendData;
 
     if (startIdx >= n - holdPer) {
         return { error: 'Недостаточно данных для расчета. Попробуйте уменьшить период расчета momentum.' };
@@ -209,7 +237,6 @@ function buildPortfolio(settings) {
         let allScores = momentumMatrix[i];
         if (!allScores || allScores.length === 0) continue;
 
-        // Apply return filter (not cached in Phase 1)
         if (useRetF) {
             allScores = allScores.filter(s => {
                 const rp = s.rawReturn * 100;
@@ -217,34 +244,33 @@ function buildPortfolio(settings) {
             });
         }
 
-        const selectedStocks = allScores.slice(0, topN);
-        if (selectedStocks.length === 0) continue;
+        const selected = allScores.slice(0, topN);
+        if (selected.length === 0) continue;
 
         let periodReturn = 0;
         const stockDetails = [];
 
-        for (const stock of selectedStocks) {
+        for (const stock of selected) {
             const buyPrice  = stock.price;
             const sellPrice = pricesByTicker[stock.ticker][i + holdPer];
             if (isNaN(sellPrice) || sellPrice <= 0) continue;
 
-            let priceReturn = (sellPrice - buyPrice) / buyPrice;
-            let stockReturn = priceReturn;
+            let prRet = (sellPrice - buyPrice) / buyPrice;
+            let stRet = prRet;
 
             if (useDiv) {
-                const divSum = getDivSum(stock.ticker, i + 1, i + holdPer);
-                stockReturn  = priceReturn + divSum / buyPrice;
+                stRet = prRet + getDivSum(stock.ticker, i + 1, i + holdPer) / buyPrice;
             }
 
-            periodReturn += stockReturn / selectedStocks.length;
+            periodReturn += stRet / selected.length;
 
             stockDetails.push({
                 ticker:    stock.ticker,
                 momentum:  stock.momentum,
                 buyPrice:  buyPrice.toFixed(2),
                 sellPrice: sellPrice.toFixed(2),
-                return:    (stockReturn * 100).toFixed(2),
-                weight:    (100 / selectedStocks.length).toFixed(1)
+                return:    (stRet * 100).toFixed(2),
+                weight:    (100 / selected.length).toFixed(1)
             });
         }
 
@@ -260,7 +286,7 @@ function buildPortfolio(settings) {
             date:        formatDate(dates[i]),
             sellDate:    formatDate(dates[i + holdPer]),
             totalReturn: (periodReturn * 100).toFixed(2),
-            stockCount:  selectedStocks.length,
+            stockCount:  selected.length,
             stocks:      stockDetails
         });
     }
@@ -269,7 +295,7 @@ function buildPortfolio(settings) {
         return { error: 'Недостаточно данных для расчета' };
     }
 
-    // Current recommendations (last row)
+    // Current recommendations
     const lastIdx = n - 1;
     let currentRecommendations = null;
     if (lastIdx >= startIdx && momentumMatrix[lastIdx]) {
@@ -280,10 +306,10 @@ function buildPortfolio(settings) {
                 return rp >= minRet && rp <= maxRet;
             });
         }
-        const selected = recScores.slice(0, topN);
+        const sel = recScores.slice(0, topN);
         currentRecommendations = {
             date:          formatDate(dates[lastIdx]),
-            stocks:        selected.map((s, idx) => ({
+            stocks:        sel.map((s, idx) => ({
                 ticker:     s.ticker,
                 price:      s.price.toFixed(2),
                 momentum:   (s.momentum * 100).toFixed(2),
@@ -292,15 +318,14 @@ function buildPortfolio(settings) {
                 weight:     (100 / topN).toFixed(1),
                 rank:       idx + 1
             })),
-            portfolioSize: selected.length
+            portfolioSize: sel.length
         };
     }
 
-    // Metrics
+    // ── Metrics ─────────────────────────────────────────────────────────────
     const totalReturn  = ((cash - 100000) / 100000) * 100;
-    const firstDate    = dates[portfolioValues[0] ? startIdx : startIdx]; // approx
-    const lastPVDate   = new Date(portfolioValues[portfolioValues.length - 1].date);
     const firstPVDate  = new Date(portfolioValues[0].date);
+    const lastPVDate   = new Date(portfolioValues[portfolioValues.length - 1].date);
     const totalYears   = (lastPVDate - firstPVDate) / (1000 * 60 * 60 * 24 * 365.25);
     const annualReturn = totalYears > 0 ? (Math.pow(cash / 100000, 1 / totalYears) - 1) * 100 : 0;
 
@@ -311,16 +336,16 @@ function buildPortfolio(settings) {
         portfolioValues.reduce((s, v) => s + Math.pow(v.return - avgReturn, 2), 0) / periods
     );
 
-    const annualAvgReturn = avgReturn * periodsPerYear;
-    const annualVol       = volatility * Math.sqrt(periodsPerYear);
-    const sharpeRatio     = annualVol > 0 ? annualAvgReturn / annualVol : 0;
+    const annualAvg   = avgReturn * periodsPerYear;
+    const annualVol   = volatility * Math.sqrt(periodsPerYear);
+    const sharpeRatio = annualVol > 0 ? annualAvg / annualVol : 0;
 
-    const downsideReturns = portfolioValues.filter(v => v.return < avgReturn).map(v => v.return);
-    const downVol = Math.sqrt(
-        downsideReturns.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / periods
+    const dsReturns    = portfolioValues.filter(v => v.return < avgReturn).map(v => v.return);
+    const downVol      = Math.sqrt(
+        dsReturns.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / periods
     );
     const annualDownVol = downVol * Math.sqrt(periodsPerYear);
-    const sortinoRatio  = annualDownVol > 0 ? annualAvgReturn / annualDownVol : sharpeRatio;
+    const sortinoRatio  = annualDownVol > 0 ? annualAvg / annualDownVol : sharpeRatio;
 
     let peak = portfolioValues[0].value;
     let maxDrawdown = 0;
@@ -357,11 +382,9 @@ function runBacktest(settings) {
     const key = getPhase1Key(settings);
 
     if (key !== phase1CacheKey) {
-        // Settings that affect momentum scores changed → recompute matrix
         momentumMatrix = precomputeMomentumMatrix(settings);
         phase1CacheKey = key;
     }
-    // else: only topN / holdingPeriod / returnFilter changed → reuse matrix
 
     return buildPortfolio(settings);
 }
@@ -376,10 +399,8 @@ self.onmessage = function(e) {
         dividendData = e.data.dividendData;
         tickersCache = e.data.tickersCache;
 
-        // Pre-index everything once so hot loops use typed arrays
         buildIndexes();
 
-        // Invalidate phase-1 cache
         momentumMatrix = null;
         phase1CacheKey = null;
 
