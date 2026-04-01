@@ -3,7 +3,7 @@
  * Plugin Name: Momentum Week для российских акций
  * Plugin URI: https://github.com/momentum-screener
  * Description: Недельный скринер моментума для российского рынка акций с бэктестингом и рекомендациями
- * Version: 1.2.0
+ * Version: 1.4.0
  * Author: Momentum Screener Team
  * Author URI: https://github.com/momentum-screener
  * License: GPL v2 or later
