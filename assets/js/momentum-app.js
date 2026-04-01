@@ -576,7 +576,7 @@ function MomentumApp() {
                                 <p>Исключает последние N недель из расчета momentum. 0 = выключено, 4 ≈ 1 месяц.</p>
                             </div>
                         </div>
-                        <div className="ms-option-body" style="display: block;">
+                        <div className="ms-option-body" style=${{display: 'block'}}>
                             <label>Пропустить: <span>${s.skipWeeks === 0 ? 'Выкл' : s.skipWeeks + ' нед'}</span></label>
                             <input type="range" min=${0} max=${4} step=${1} value=${s.skipWeeks}
                                 onInput=${locks.skip ? undefined : function(e) { upd('skipWeeks', parseInt(e.target.value)); }}
@@ -624,7 +624,7 @@ function MomentumApp() {
                                 <input type="range" min=${-50} max=${100} step=${5} value=${s.minReturn}
                                     onInput=${locks.ret ? undefined : function(e) { upd('minReturn', parseInt(e.target.value)); }}
                                     disabled=${locks.ret || undefined} />
-                                <label style="margin-top:8px;">Макс. доходность: <span>${s.maxReturn}</span>%</label>
+                                <label style=${{marginTop: '8px'}}>Макс. доходность: <span>${s.maxReturn}</span>%</label>
                                 <input type="range" min=${50} max=${300} step=${10} value=${s.maxReturn}
                                     onInput=${locks.ret ? undefined : function(e) { upd('maxReturn', parseInt(e.target.value)); }}
                                     disabled=${locks.ret || undefined} />
