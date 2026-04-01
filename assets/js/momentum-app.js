@@ -472,24 +472,46 @@ function MomentumApp() {
 
     // Indexes built once from window.__momentumData__
     const idx = useMemo(function() {
-        const d = window.__momentumData__;
-        if (!d || !d.prices) return null;
-        return buildIndexes(d.prices, d.dividends || null);
+        try {
+            var d = window.__momentumData__;
+            if (!d || !d.prices || !d.prices.length) return null;
+            return buildIndexes(d.prices, d.dividends || null);
+        } catch (e) {
+            console.error('[MomentumApp] buildIndexes error:', e);
+            return { _error: e.message || String(e) };
+        }
     }, []);
 
     // Phase 1: recompute matrix when heavy params change
     const matrix = useMemo(function() {
-        if (!idx) return null;
-        return buildMatrix(idx, s);
+        if (!idx || idx._error) return null;
+        try {
+            return buildMatrix(idx, s);
+        } catch (e) {
+            console.error('[MomentumApp] buildMatrix error:', e);
+            return null;
+        }
     }, [idx, s.lookbackPeriod, s.skipWeeks, s.useDividends, s.useVolFilter, s.maxVol, s.useRiskAdj]);
 
     // Phase 2: build portfolio from matrix (cheap)
     const result = useMemo(function() {
-        if (!idx || !matrix) return null;
-        return buildPortfolio(idx, matrix, s);
+        if (!idx || idx._error || !matrix) return null;
+        try {
+            return buildPortfolio(idx, matrix, s);
+        } catch (e) {
+            console.error('[MomentumApp] buildPortfolio error:', e);
+            return { error: 'Ошибка расчёта: ' + (e.message || String(e)) };
+        }
     }, [idx, matrix, s.holdingPeriod, s.topN, s.useReturnFilter, s.minReturn, s.maxReturn]);
 
-    if (!idx) return html`<div className="ms-error"><p>Данные не получены</p></div>`;
+    if (!idx) {
+        var noData = window.__momentumData__;
+        if (!noData || !noData.prices) {
+            return html`<div className="ms-error"><p>Excel файл не настроен или не содержит данных. Перейдите в Настройки → Momentum Week.</p></div>`;
+        }
+        return html`<div className="ms-error"><p>Ошибка инициализации данных. Подробности в консоли браузера.</p></div>`;
+    }
+    if (idx._error) return html`<div className="ms-error"><p>Ошибка загрузки данных: ${idx._error}</p></div>`;
     if (!result) return html`<div className="ms-loading"><div className="ms-spinner"></div><p>Расчёт...</p></div>`;
     if (result.error) return html`<div className="ms-error"><p>${result.error}</p></div>`;
 
@@ -795,10 +817,25 @@ function MomentumApp() {
 
 // ─── Mount ─────────────────────────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', function() {
-    const el = document.getElementById('momentum-screener-root');
-    if (!el || !window.__momentumData__) return;
-    ReactDOM.createRoot(el).render(createElement(MomentumApp, null));
-});
+function momentumMount() {
+    try {
+        var el = document.getElementById('momentum-screener-root');
+        if (!el) return;
+        // Always mount — MomentumApp handles the no-data error state itself
+        ReactDOM.createRoot(el).render(createElement(MomentumApp, null));
+    } catch (e) {
+        console.error('[MomentumApp] mount error:', e);
+        var root = document.getElementById('momentum-screener-root');
+        if (root) root.innerHTML = '<div class="ms-error"><p>Ошибка инициализации: ' + (e.message || String(e)) + '</p></div>';
+    }
+}
+
+// WP footer scripts run before DOMContentLoaded fires in most setups,
+// but use readyState as a safety net in case the event already fired.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', momentumMount);
+} else {
+    momentumMount();
+}
 
 })();
