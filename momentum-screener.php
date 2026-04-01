@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('MOMENTUM_WEEK_VERSION', '1.3.0');
+define('MOMENTUM_WEEK_VERSION', '1.4.0');
 define('MOMENTUM_WEEK_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('MOMENTUM_WEEK_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -353,7 +353,7 @@ class Momentum_Week {
             return;
         }
 
-        // Enqueue Chart.js
+        // Chart.js
         wp_enqueue_script(
             'chartjs',
             'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
@@ -362,7 +362,30 @@ class Momentum_Week {
             true
         );
 
-        // Enqueue plugin styles
+        // React 18 UMD + htm (separate handles to avoid conflicts with any theme React)
+        wp_enqueue_script(
+            'mw-react',
+            'https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js',
+            array(),
+            '18',
+            true
+        );
+        wp_enqueue_script(
+            'mw-react-dom',
+            'https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js',
+            array('mw-react'),
+            '18',
+            true
+        );
+        wp_enqueue_script(
+            'mw-htm',
+            'https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js',
+            array(),
+            '3.1.1',
+            true
+        );
+
+        // Plugin styles
         wp_enqueue_style(
             'momentum-week',
             MOMENTUM_WEEK_PLUGIN_URL . 'assets/css/momentum-screener.css',
@@ -370,24 +393,21 @@ class Momentum_Week {
             MOMENTUM_WEEK_VERSION
         );
 
-        // Enqueue plugin script (no sheetjs dependency — parsing happens server-side)
+        // React app (replaces momentum-screener.js + momentum-worker.js)
         wp_enqueue_script(
             'momentum-week',
-            MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-screener.js',
-            array('jquery', 'chartjs'),
+            MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-app.js',
+            array('mw-react', 'mw-react-dom', 'mw-htm', 'chartjs'),
             MOMENTUM_WEEK_VERSION,
             true
         );
 
-        // Get settings
+        // Parse Excel once (PHP, cached) and embed directly in the page as inline JS.
+        // React app reads window.__momentumData__ synchronously — no AJAX, no worker.
         $options   = get_option('momentum_week_settings');
         $file_id   = isset($options['excel_file_id']) ? absint($options['excel_file_id']) : 0;
         $file_path = $file_id ? get_attached_file($file_id) : '';
 
-        // Parse Excel once (PHP, cached) and embed directly in the page HTML.
-        // This eliminates the AJAX round-trip entirely — the worker gets data
-        // the moment it starts, with no network delay.
-        $has_inline_data = false;
         if ($file_path && file_exists($file_path)) {
             $cache_key = 'mw_data_' . md5($file_path . filemtime($file_path));
             $data      = get_transient($cache_key);
@@ -400,34 +420,13 @@ class Momentum_Week {
             }
 
             if (!is_wp_error($data) && !empty($data['prices'])) {
-                // Inline as a JS variable — available before any script runs
                 wp_add_inline_script(
                     'momentum-week',
                     'window.__momentumData__=' . wp_json_encode($data) . ';',
                     'before'
                 );
-                $has_inline_data = true;
             }
         }
-
-        // Localize script
-        wp_localize_script('momentum-week', 'momentumScreener', array(
-            'ajaxUrl'   => admin_url('admin-ajax.php'),
-            'nonce'     => wp_create_nonce('momentum_week_data'),
-            'workerUrl' => MOMENTUM_WEEK_PLUGIN_URL . 'assets/js/momentum-worker.js',
-            'hasFile'   => $file_id > 0,
-            'defaults'  => array(
-                'lookback' => isset($options['default_lookback']) ? intval($options['default_lookback']) : 13,
-                'holding'  => isset($options['default_holding']) ? intval($options['default_holding']) : 4,
-                'topn'     => isset($options['default_topn'])    ? intval($options['default_topn'])    : 10,
-            ),
-            'strings' => array(
-                'loading' => __('Загрузка данных...', 'momentum-week'),
-                'error'   => __('Ошибка загрузки данных', 'momentum-week'),
-                'noData'  => __('Данные не найдены', 'momentum-week'),
-                'noFile'  => __('Excel файл не настроен. Перейдите в Настройки > Momentum Week', 'momentum-week'),
-            )
-        ));
     }
 
     /**
