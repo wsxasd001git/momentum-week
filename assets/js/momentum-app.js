@@ -333,10 +333,23 @@ function getTips(tipData, s) {
 
 // ─── Components ────────────────────────────────────────────────────────────────
 
+function LockBadge() {
+    return html`
+        <span className="ms-lock-badge" aria-label="Параметр зафиксирован администратором">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <span className="ms-lock-tooltip">Параметр зафиксирован администратором</span>
+        </span>
+    `;
+}
+
 function Slider({ id, label, value, min, max, step, unit, desc, onChange, locked }) {
     return html`
         <div className=${'ms-control-group' + (locked ? ' ms-control-locked' : '')}>
-            <label htmlFor=${id}>${label}</label>
+            <label htmlFor=${id}>${label} ${locked && html`<${LockBadge}/>`}</label>
             <input type="range" id=${id} min=${min} max=${max} step=${step || 1}
                    value=${value}
                    onInput=${locked ? undefined : function(e) { onChange(parseInt(e.target.value)); }}
@@ -558,7 +571,7 @@ function MomentumApp() {
                     <div className=${'ms-option' + (locks.dividends ? ' ms-option-locked' : '')}>
                         <div className="ms-option-header">
                             <div>
-                                <h4>Учет дивидендов</h4>
+                                <h4>Учет дивидендов ${locks.dividends && html`<${LockBadge}/>`}</h4>
                                 <p>${s.useDividends
                                     ? 'Полная доходность: рост цены + дивиденды'
                                     : 'Только рост цены (без дивидендов)'}</p>
@@ -572,7 +585,7 @@ function MomentumApp() {
                     <div className=${'ms-option' + (locks.skip ? ' ms-option-locked' : '')}>
                         <div className="ms-option-header">
                             <div>
-                                <h4>Reversal Effect: пропустить N последних недель</h4>
+                                <h4>Reversal Effect: пропустить N последних недель ${locks.skip && html`<${LockBadge}/>`}</h4>
                                 <p>Исключает последние N недель из расчета momentum. 0 = выключено, 4 ≈ 1 месяц.</p>
                             </div>
                         </div>
@@ -589,7 +602,7 @@ function MomentumApp() {
 
                     <div className=${'ms-option ms-option-advanced' + (locks.vol ? ' ms-option-locked' : '')}>
                         <div className="ms-option-header">
-                            <h4>Фильтр волатильности</h4>
+                            <h4>Фильтр волатильности ${locks.vol && html`<${LockBadge}/>`}</h4>
                             <${Toggle} value=${s.useVolFilter}
                                 onChange=${function(v) { upd('useVolFilter', v); }}
                                 locked=${locks.vol} />
@@ -604,7 +617,7 @@ function MomentumApp() {
                             </div>
                         `}
                         <div className=${'ms-option-sub' + (locks.riskadj ? ' ms-option-locked' : '')}>
-                            <span>Риск-корректированный momentum</span>
+                            <span>Риск-корректированный momentum ${locks.riskadj && html`<${LockBadge}/>`}</span>
                             <${Toggle} value=${s.useRiskAdj}
                                 onChange=${function(v) { upd('useRiskAdj', v); }}
                                 locked=${locks.riskadj} small=${true} />
@@ -613,7 +626,7 @@ function MomentumApp() {
 
                     <div className=${'ms-option ms-option-advanced' + (locks.ret ? ' ms-option-locked' : '')}>
                         <div className="ms-option-header">
-                            <h4>Фильтр границ доходности</h4>
+                            <h4>Фильтр границ доходности ${locks.ret && html`<${LockBadge}/>`}</h4>
                             <${Toggle} value=${s.useReturnFilter}
                                 onChange=${function(v) { upd('useReturnFilter', v); }}
                                 locked=${locks.ret} />
