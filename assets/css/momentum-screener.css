@@ -257,6 +257,57 @@
     z-index: 1;
 }
 
+/* Lock badge & tooltip */
+.ms-lock-badge {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+    margin-left: 5px;
+    cursor: help;
+    color: var(--color-text-muted);
+    z-index: 2;
+}
+
+.ms-lock-badge svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.ms-lock-tooltip {
+    position: absolute;
+    bottom: calc(100% + 7px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--color-text-primary);
+    color: var(--color-white);
+    font-size: 0.72rem;
+    font-weight: 400;
+    line-height: 1.3;
+    padding: 5px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 100;
+}
+
+.ms-lock-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--color-text-primary);
+}
+
+.ms-lock-badge:hover .ms-lock-tooltip {
+    opacity: 1;
+}
+
 .ms-option-body {
     margin-top: 12px;
     padding-top: 12px;
