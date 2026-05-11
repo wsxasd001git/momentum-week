@@ -29,7 +29,8 @@ $lock_return    = !empty($atts['lock_return'])    && $atts['lock_return']    !==
      data-lock-skip="<?php echo $lock_skip ? '1' : '0'; ?>"
      data-lock-vol="<?php echo $lock_vol ? '1' : '0'; ?>"
      data-lock-riskadj="<?php echo $lock_riskadj ? '1' : '0'; ?>"
-     data-lock-return="<?php echo $lock_return ? '1' : '0'; ?>">
+     data-lock-return="<?php echo $lock_return ? '1' : '0'; ?>"
+     data-tickers="<?php echo esc_attr($atts['tickers']); ?>">
     <div class="ms-loading">
         <div class="ms-spinner"></div>
         <p><?php esc_html_e('Загрузка данных...', 'momentum-week'); ?></p>

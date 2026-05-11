@@ -388,6 +388,16 @@ self.onmessage = function(e) {
             }
 
             tickersCache = Object.keys(pricesRaw[0]).filter(function(k) { return k !== 'Time'; });
+
+            var tickerFilter = e.data.tickerFilter || null;
+            if (tickerFilter && tickerFilter.length > 0) {
+                var filterSet = {};
+                for (var fi = 0; fi < tickerFilter.length; fi++) {
+                    filterSet[tickerFilter[fi]] = true;
+                }
+                tickersCache = tickersCache.filter(function(t) { return !!filterSet[t]; });
+            }
+
             n       = pricesRaw.length;
             m       = tickersCache.length;
             hasDivs = !!(dividendsRaw && dividendsRaw.length > 0);

@@ -3,7 +3,7 @@ Contributors: momentumscreener
 Tags: stocks, momentum, investment, trading, russian stocks
 Requires at least: 5.0
 Tested up to: 6.4
-Stable tag: 1.0.0
+Stable tag: 1.5.0
 Requires PHP: 7.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -63,11 +63,15 @@ Momentum Screener - это WordPress плагин для анализа и ск�
 **С параметрами:**
 `[momentum_screener lookback="6" holding="1" topn="15" show_backtest="true"]`
 
+**С фильтром тикеров:**
+`[momentum_week tickers="SBER,GAZP,LKOH,YNDX,GMKN"]`
+
 **Параметры:**
 * `lookback` - Период расчета momentum (1-12 месяцев)
 * `holding` - Период удержания (1-6 месяцев)
 * `topn` - Количество акций в портфеле (5-30)
 * `show_backtest` - Показывать бэктест (true/false)
+* `tickers` - Ограничить расчёт только указанными тикерами (через запятую). Если не указан — используются все тикеры из файла.
 
 == Часто задаваемые вопросы ==
 
@@ -90,7 +94,19 @@ Excel или Google Sheets с:
 
 При высокой рыночной волатильности автоматически увеличивает диверсификацию портфеля.
 
+= Как разместить два скринера с разными наборами акций? =
+
+Используйте атрибут `tickers` на каждой странице с нужным набором тикеров через запятую:
+
+`[momentum_week tickers="SBER,GAZP,LKOH,YNDX,GMKN"]`
+
+Тикеры, которых нет в Excel-файле, молча игнорируются. Если атрибут не указан — используются все тикеры из файла.
+
 == Changelog ==
+
+= 1.5.0 =
+* Добавлен атрибут `tickers` для шорткода — позволяет ограничить расчёт конкретным набором тикеров
+* Обновлена документация в админке и readme.txt
 
 = 1.0.0 =
 * Первый релиз

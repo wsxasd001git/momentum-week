@@ -18,10 +18,17 @@ function formatDate(date) {
     return date.toISOString().split('T')[0];
 }
 
-function buildIndexes(pricesRaw, dividendsRaw) {
+function buildIndexes(pricesRaw, dividendsRaw, tickerFilter) {
     if (!pricesRaw || pricesRaw.length === 0) return null;
 
-    const tickers = Object.keys(pricesRaw[0]).filter(k => k !== 'Time');
+    let tickers = Object.keys(pricesRaw[0]).filter(k => k !== 'Time');
+    if (tickerFilter && tickerFilter.length > 0) {
+        const filterSet = {};
+        for (let fi = 0; fi < tickerFilter.length; fi++) {
+            filterSet[tickerFilter[fi]] = true;
+        }
+        tickers = tickers.filter(function(t) { return !!filterSet[t]; });
+    }
     const n       = pricesRaw.length;
     const m       = tickers.length;
     const hasDivs = !!(dividendsRaw && dividendsRaw.length > 0);
@@ -466,6 +473,10 @@ function MomentumApp() {
         riskadj:   el.dataset.lockRiskadj   === '1',
         ret:       el.dataset.lockReturn    === '1'
     };
+    const rawTickers = el.dataset.tickers || '';
+    const tickerFilter = rawTickers.trim()
+        ? rawTickers.split(',').map(function(t) { return t.trim().toUpperCase(); }).filter(Boolean)
+        : null;
 
     const [s, setS]           = useState({
         lookbackPeriod:  defaults.lookback,
@@ -488,7 +499,7 @@ function MomentumApp() {
         try {
             var d = window.__momentumData__;
             if (!d || !d.prices || !d.prices.length) return null;
-            return buildIndexes(d.prices, d.dividends || null);
+            return buildIndexes(d.prices, d.dividends || null, tickerFilter);
         } catch (e) {
             console.error('[MomentumApp] buildIndexes error:', e);
             return { _error: e.message || String(e) };
