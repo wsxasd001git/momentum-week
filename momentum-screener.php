@@ -3,7 +3,7 @@
  * Plugin Name: Momentum Week для российских акций
  * Plugin URI: https://github.com/momentum-screener
  * Description: Недельный скринер моментума для российского рынка акций с бэктестингом и рекомендациями
- * Version: 1.4.0
+ * Version: 1.5.0
  * Author: Momentum Screener Team
  * Author URI: https://github.com/momentum-screener
  * License: GPL v2 or later
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('MOMENTUM_WEEK_VERSION', '1.4.0');
+define('MOMENTUM_WEEK_VERSION', '1.5.0');
 define('MOMENTUM_WEEK_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('MOMENTUM_WEEK_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -279,7 +279,10 @@ class Momentum_Week {
                 <li><code>lookback="13"</code> - <?php esc_html_e('Период расчета momentum (1-52 нед)', 'momentum-week'); ?></li>
                 <li><code>holding="4"</code> - <?php esc_html_e('Период удержания (1-10 нед)', 'momentum-week'); ?></li>
                 <li><code>topn="10"</code> - <?php esc_html_e('Количество акций в портфеле (5-30)', 'momentum-week'); ?></li>
+                <li><code>tickers="SBER,GAZP,LKOH"</code> — <?php esc_html_e('Ограничить расчёт только указанными тикерами (через запятую). Если не указан — используются все тикеры из файла.', 'momentum-week'); ?></li>
             </ul>
+            <p><?php esc_html_e('Атрибут tickers позволяет размещать несколько скринеров на разных страницах с разными наборами акций:', 'momentum-week'); ?></p>
+            <code>[momentum_week tickers="SBER,GAZP,LKOH,YNDX,GMKN"]</code>
 
             <h3><?php esc_html_e('Блокировка фильтров:', 'momentum-week'); ?></h3>
             <p><?php esc_html_e('Добавьте атрибуты lock_*="1", чтобы запретить пользователю изменять соответствующий параметр. Пример:', 'momentum-week'); ?></p>
